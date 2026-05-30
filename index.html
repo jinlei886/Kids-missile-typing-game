@@ -2,1787 +2,663 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>字母导弹 - Letter Missile</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #000;
-    overflow: hidden;
-    font-family: 'Courier New', monospace;
-    user-select: none;
-    -webkit-user-select: none;
-    touch-action: manipulation;
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#000; touch-action:manipulation;
+    -webkit-touch-callout:none; -webkit-user-select:none;
+    user-select:none; -webkit-tap-highlight-color:transparent;
+    font-family:'Courier New',monospace;
   }
-  canvas { display: block; }
+  canvas { display:block; width:100%; height:100%; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <script>
-(function() {
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
+(function(){
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
 
-  // ─── AUDIO SYSTEM ──────────────────────────────────
-  let audioCtx = null;
-  function initAudio() {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+// ─── AUDIO ──────────────────────────────────────────
+let audioCtx=null;
+function initAudio(){ if(!audioCtx){ audioCtx=new(window.AudioContext||window.webkitAudioContext)(); } if(audioCtx.state==='suspended') audioCtx.resume(); }
+function playTone(freq,type,dur,vol=0.15,glide=0){
+  if(!audioCtx) return; const t=audioCtx.currentTime;
+  const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t);
+  if(glide) o.frequency.linearRampToValueAtTime(freq+glide,t+dur);
+  g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+dur);
+}
+function sfxLaunch(){ playTone(200,'sawtooth',0.3,0.1,800); }
+function sfxHit(){ playTone(80,'square',0.4,0.12); playTone(600,'square',0.15,0.08,-400); }
+function sfxMiss(){ playTone(300,'triangle',0.5,0.1,-200); }
+function sfxCombo(){ playTone(880,'square',0.1,0.06); setTimeout(()=>playTone(1100,'square',0.1,0.06),80); }
+function sfxGameOver(){ playTone(200,'sawtooth',0.8,0.15,-150); }
+
+// ─── CANVAS ─────────────────────────────────────────
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(dpr, dpr);
+  W = window.innerWidth;
+  H = window.innerHeight;
+}
+let W, H;
+window.addEventListener('resize', resize);
+resize();
+
+// ─── STATE ──────────────────────────────────────────
+const STATE = { INTRO:'intro', PLAYING:'playing', OVER:'over', REST:'rest' };
+let gameState = STATE.INTRO;
+let introStart = Date.now();
+let score=0, combo=0, maxCombo=0, hp=3;
+const MAX_HP=3;
+let restEndTime=0;
+const REST_KEY='missile_game_rest_end';
+(function(){
+  const sr=localStorage.getItem(REST_KEY);
+  if(sr){ const et=parseInt(sr,10); if(Date.now()<et){ gameState=STATE.REST; restEndTime=et; } else localStorage.removeItem(REST_KEY); }
+})();
+
+// ─── STARS / CLOUDS ─────────────────────────────────
+class Star {
+  constructor(){ this.reset(true); }
+  reset(init){
+    this.x=Math.random()*W; this.y=init?Math.random()*H:-5;
+    this.size=Math.random()*1.8+0.5; this.speed=this.size*0.4+0.1;
+    this.twinkle=Math.random()*Math.PI*2; this.twinkleSpeed=Math.random()*0.03+0.01;
   }
-  function playTone(freq, type, duration, vol = 0.15, glide = 0) {
-    if (!audioCtx) return;
-    const t = audioCtx.currentTime;
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t);
-    if (glide) osc.frequency.linearRampToValueAtTime(freq + glide, t + duration);
-    gain.gain.setValueAtTime(vol, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start(t);
-    osc.stop(t + duration);
+  update(dt){ this.y+=this.speed*dt*30; this.twinkle+=this.twinkleSpeed*dt*30; if(this.y>H+5) this.reset(); }
+  draw(ctx){ const a=0.4+Math.sin(this.twinkle)*0.4; ctx.fillStyle=`rgba(200,220,255,${a})`; ctx.beginPath(); ctx.arc(this.x,this.y,this.size,0,Math.PI*2); ctx.fill(); }
+}
+class Cloud {
+  constructor(){ this.reset(true); }
+  reset(init){ this.x=init?Math.random()*W:-200; this.y=Math.random()*H*0.5+20; this.w=Math.random()*180+80; this.h=Math.random()*30+15; this.speed=Math.random()*20+10; this.alpha=Math.random()*0.06+0.02; }
+  update(dt){ this.x+=this.speed*dt; if(this.x>W+300) this.reset(); }
+  draw(ctx){
+    ctx.fillStyle=`rgba(180,200,240,${this.alpha})`;
+    ctx.beginPath(); ctx.ellipse(this.x,this.y,this.w/2,this.h/2,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(this.x-this.w*0.25,this.y-this.h*0.2,this.w*0.3,this.h*0.5,-0.3,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(this.x+this.w*0.2,this.y-this.h*0.15,this.w*0.25,this.h*0.45,0.2,0,Math.PI*2); ctx.fill();
   }
-  function sfxLaunch() { playTone(200, 'sawtooth', 0.3, 0.1, 800); }
-  function sfxHit() { playTone(80, 'square', 0.4, 0.12); playTone(600, 'square', 0.15, 0.08, -400); }
-  function sfxMiss() { playTone(300, 'triangle', 0.5, 0.1, -200); }
-  function sfxCombo() { playTone(880, 'square', 0.1, 0.06); setTimeout(() => playTone(1100, 'square', 0.1, 0.06), 80); }
-  function sfxGameOver() { playTone(200, 'sawtooth', 0.8, 0.15, -150); }
+}
+const stars=Array.from({length:120},()=>new Star());
+const clouds=Array.from({length:6},()=>new Cloud());
 
-  // ─── CANVAS SETUP ──────────────────────────────────
-  function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+// ─── WORDS / MATH ───────────────────────────────────
+const WORDS=['CAT','DOG','CAR','BUS','SUN','HAT','BED','CUP','BOX','PEN','RED','BIG','RUN','SIT','TOP','FUN','HOT','MAP','JAM','LEG','PIG','COW','FAN','MUD','ZIP','FOX','BAT','HUG','YUM','WET'];
+function randomMathProblem(){
+  const type=Math.random();
+  let a,b,ans;
+  if(type<0.3){ a=Math.floor(Math.random()*50)+10; b=Math.floor(Math.random()*(60-a>0?60-a:10))+1; ans=a+b; return {question:`${a} + ${b} = ?`, answer:ans.toString()}; }
+  else if(type<0.6){ a=Math.floor(Math.random()*40)+15; b=Math.floor(Math.random()*14)+1; ans=a-b; return {question:`${a} - ${b} = ?`, answer:ans.toString()}; }
+  else { a=Math.floor(Math.random()*7)+3; b=Math.floor(Math.random()*7)+3; ans=a*b; return {question:`${a} × ${b} = ?`, answer:ans.toString()}; }
+}
+
+// ─── JET ────────────────────────────────────────────
+class Jet {
+  constructor(y,letter,fromRight){
+    this.letter=letter; this.y=y; this.fromRight=fromRight;
+    this.x=fromRight?W+80:-80; this.speed=(W+160)/15;
+    this.alive=true; this.hit=false; this.escaped=false;
+    this.trailParticles=[]; this.glowPhase=Math.random()*Math.PI*2;
   }
-  window.addEventListener('resize', resize);
-  resize();
-
-  // ─── GAME STATE ────────────────────────────────────
-  const STATE = { MENU: 'menu', PLAYING: 'playing', OVER: 'over', REST: 'rest' };
-  let gameState = STATE.MENU;
-  let score = 0;
-  let combo = 0;
-  let maxCombo = 0;
-  let hp = 3;
-  const MAX_HP = 3;
-  let restEndTime = 0;
-
-  // ─── REST TIMER PERSISTENCE ────────────────────────
-  const REST_KEY = 'missile_game_rest_end';
-  const savedRest = localStorage.getItem(REST_KEY);
-  if (savedRest) {
-    const endTime = parseInt(savedRest, 10);
-    if (Date.now() < endTime) {
-      gameState = STATE.REST;
-      restEndTime = endTime;
-    } else {
-      localStorage.removeItem(REST_KEY);
-    }
+  update(dt){
+    const d=this.fromRight?-1:1; this.x+=this.speed*d*dt; this.glowPhase+=dt*4;
+    if(Math.random()<0.6){ const tx=this.x+(this.fromRight?55:-55); this.trailParticles.push({x:tx+(Math.random()-0.5)*8,y:this.y+(Math.random()-0.5)*10,life:1,decay:0.02+Math.random()*0.04,size:Math.random()*2+1}); }
+    for(let i=this.trailParticles.length-1;i>=0;i--){ const p=this.trailParticles[i]; p.life-=p.decay*dt*60; p.x+=(this.fromRight?1:-1)*40*dt; if(p.life<=0) this.trailParticles.splice(i,1); }
+    if(this.fromRight&&this.x<-100) this.escaped=true;
+    if(!this.fromRight&&this.x>W+100) this.escaped=true;
   }
-
-  // ─── STARS ─────────────────────────────────────────
-  class Star {
-    constructor() {
-      this.reset(true);
-    }
-    reset(init = false) {
-      this.x = Math.random() * canvas.width;
-      this.y = init ? Math.random() * canvas.height : -5;
-      this.size = Math.random() * 1.8 + 0.5;
-      this.speed = this.size * 0.4 + 0.1;
-      this.twinkle = Math.random() * Math.PI * 2;
-      this.twinkleSpeed = Math.random() * 0.03 + 0.01;
-    }
-    update(dt) {
-      this.y += this.speed * dt * 30;
-      this.twinkle += this.twinkleSpeed * dt * 30;
-      if (this.y > canvas.height + 5) this.reset();
-    }
-    draw(ctx) {
-      const alpha = 0.4 + Math.sin(this.twinkle) * 0.4;
-      ctx.fillStyle = `rgba(200,220,255,${alpha})`;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  draw(ctx){
+    if(!this.alive) return; const x=this.x,y=this.y,d=this.fromRight?-1:1;
+    for(const p of this.trailParticles){ const a=p.life*0.8; ctx.fillStyle=`rgba(100,180,255,${a})`; ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,Math.PI*2); ctx.fill(); }
+    ctx.save(); ctx.translate(x,y); if(d===-1) ctx.scale(-1,1);
+    const ga=0.3+Math.sin(this.glowPhase)*0.15; ctx.shadowColor=`rgba(0,180,255,${ga})`; ctx.shadowBlur=15;
+    const bg=ctx.createLinearGradient(0,-20,0,20); bg.addColorStop(0,'#8899aa'); bg.addColorStop(0.5,'#556677'); bg.addColorStop(1,'#334455');
+    ctx.fillStyle=bg; ctx.beginPath();
+    ctx.moveTo(65,0);ctx.lineTo(40,-8);ctx.lineTo(10,-10);ctx.lineTo(-20,-12);ctx.lineTo(-30,-28);ctx.lineTo(-45,-30);ctx.lineTo(-50,-12);
+    ctx.lineTo(-65,-8);ctx.lineTo(-70,-3);ctx.lineTo(-65,2);ctx.lineTo(-50,5);ctx.lineTo(-45,28);ctx.lineTo(-30,26);ctx.lineTo(-20,12);ctx.lineTo(10,10);ctx.lineTo(40,8);
+    ctx.closePath(); ctx.fill();
+    const cg=ctx.createLinearGradient(0,-8,0,8); cg.addColorStop(0,'#aaddff'); cg.addColorStop(0.5,'#4488cc'); cg.addColorStop(1,'#224466');
+    ctx.fillStyle=cg; ctx.beginPath(); ctx.ellipse(30,0,14,8,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#88bbee'; ctx.lineWidth=1; ctx.stroke();
+    const eg=ctx.createRadialGradient(-68,0,2,-68,0,18); eg.addColorStop(0,'rgba(100,200,255,0.9)'); eg.addColorStop(0.4,'rgba(50,150,255,0.5)'); eg.addColorStop(1,'rgba(0,50,200,0)');
+    ctx.fillStyle=eg; ctx.beginPath(); ctx.arc(-66,0,18,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(200,240,255,0.8)'; ctx.beginPath(); ctx.arc(-66,0,5,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur=0; ctx.restore();
+    const lx=x+(this.fromRight?-10:10),ly=y;
+    const pulse=0.7+Math.sin(Date.now()/400)*0.3;
+    ctx.fillStyle=`rgba(0,40,20,${pulse*0.6})`; ctx.beginPath(); ctx.arc(lx,ly,22,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#00ff88'; ctx.shadowColor='rgba(0,255,136,0.9)'; ctx.shadowBlur=14;
+    ctx.font='bold 36px "Courier New",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(this.letter,lx,ly); ctx.shadowBlur=0;
+    ctx.strokeStyle='rgba(0,255,136,0.6)'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(lx,ly,22,0,Math.PI*2); ctx.stroke();
   }
+}
 
-  const stars = Array.from({ length: 120 }, () => new Star());
-
-  // ─── CLOUDS (subtle high-altitude) ──────────────────
-  class Cloud {
-    constructor() {
-      this.reset(true);
-    }
-    reset(init = false) {
-      this.x = init ? Math.random() * canvas.width : -200;
-      this.y = Math.random() * canvas.height * 0.5 + 20;
-      this.width = Math.random() * 180 + 80;
-      this.height = Math.random() * 30 + 15;
-      this.speed = Math.random() * 20 + 10;
-      this.alpha = Math.random() * 0.06 + 0.02;
-    }
-    update(dt) {
-      this.x += this.speed * dt;
-      if (this.x > canvas.width + 300) this.reset();
-    }
-    draw(ctx) {
-      ctx.fillStyle = `rgba(180,200,240,${this.alpha})`;
-      ctx.beginPath();
-      const cx = this.x; const cy = this.y;
-      const w = this.width; const h = this.height;
-      ctx.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.ellipse(cx - w * 0.25, cy - h * 0.2, w * 0.3, h * 0.5, -0.3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.ellipse(cx + w * 0.2, cy - h * 0.15, w * 0.25, h * 0.45, 0.2, 0, Math.PI * 2);
-      ctx.fill();
-    }
+// ─── UFO ────────────────────────────────────────────
+class UFO {
+  constructor(y,word,fromRight){
+    this.word=word; this.y=y; this.fromRight=fromRight;
+    this.x=fromRight?W+100:-100; this.speed=(W+200)/18;
+    this.alive=true;this.hit=false;this.escaped=false;this.typedIndex=0;this.wrongFlash=0;
+    this.trailParticles=[];this.glowPhase=Math.random()*Math.PI*2;this.wobble=Math.random()*Math.PI*2;
   }
-
-  const clouds = Array.from({ length: 6 }, () => new Cloud());
-
-  // ─── FIGHTER JET ───────────────────────────────────
-  class Jet {
-    constructor(y, letter, fromRight) {
-      this.letter = letter;
-      this.width = 140;
-      this.height = 55;
-      this.y = y;
-      this.fromRight = fromRight;
-      this.x = fromRight ? canvas.width + 80 : -80;
-      this.targetX = fromRight ? -80 : canvas.width + 80;
-      this.speed = (canvas.width + 160) / 15; // ~15 seconds to cross — slow for young kids
-      this.alive = true;
-      this.hit = false;
-      this.escaped = false;
-      this.trailParticles = [];
-      this.glowPhase = Math.random() * Math.PI * 2;
-    }
-
-    update(dt) {
-      const dir = this.fromRight ? -1 : 1;
-      this.x += this.speed * dir * dt;
-      this.glowPhase += dt * 4;
-
-      // Engine trail
-      if (Math.random() < 0.6) {
-        const trailX = this.x + (this.fromRight ? this.width * 0.55 : -this.width * 0.55);
-        this.trailParticles.push({
-          x: trailX + (Math.random() - 0.5) * 8,
-          y: this.y + (Math.random() - 0.5) * 10,
-          life: 1,
-          decay: 0.02 + Math.random() * 0.04,
-          size: Math.random() * 2 + 1
-        });
-      }
-
-      // Update trail
-      for (let i = this.trailParticles.length - 1; i >= 0; i--) {
-        const p = this.trailParticles[i];
-        p.life -= p.decay * dt * 60;
-        p.x += (this.fromRight ? 1 : -1) * 40 * dt;
-        if (p.life <= 0) this.trailParticles.splice(i, 1);
-      }
-
-      // Check escaped
-      const margin = 100;
-      if (this.fromRight && this.x < -margin) this.escaped = true;
-      if (!this.fromRight && this.x > canvas.width + margin) this.escaped = true;
-    }
-
-    draw(ctx) {
-      if (!this.alive) return;
-      const x = this.x;
-      const y = this.y;
-      const dir = this.fromRight ? -1 : 1;
-
-      // Engine trail particles
-      for (const p of this.trailParticles) {
-        const alpha = p.life * 0.8;
-        ctx.fillStyle = `rgba(100,180,255,${alpha})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = `rgba(200,240,255,${alpha * 0.7})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * 0.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // ── Draw jet body (flipped if fromRight) ──
-      ctx.save();
-      ctx.translate(x, y);
-      if (dir === -1) ctx.scale(-1, 1);
-
-      // Glow
-      const glowAlpha = 0.3 + Math.sin(this.glowPhase) * 0.15;
-      ctx.shadowColor = `rgba(0,180,255,${glowAlpha})`;
-      ctx.shadowBlur = 15;
-
-      // Jet body
-      const bodyGrad = ctx.createLinearGradient(0, -20, 0, 20);
-      bodyGrad.addColorStop(0, '#8899aa');
-      bodyGrad.addColorStop(0.5, '#556677');
-      bodyGrad.addColorStop(1, '#334455');
-      ctx.fillStyle = bodyGrad;
-      ctx.beginPath();
-      ctx.moveTo(65, 0);
-      ctx.lineTo(40, -8);
-      ctx.lineTo(10, -10);
-      ctx.lineTo(-20, -12);
-      ctx.lineTo(-30, -28);
-      ctx.lineTo(-45, -30);
-      ctx.lineTo(-50, -12);
-      ctx.lineTo(-65, -8);
-      ctx.lineTo(-70, -3);
-      ctx.lineTo(-65, 2);
-      ctx.lineTo(-50, 5);
-      ctx.lineTo(-45, 28);
-      ctx.lineTo(-30, 26);
-      ctx.lineTo(-20, 12);
-      ctx.lineTo(10, 10);
-      ctx.lineTo(40, 8);
-      ctx.closePath();
-      ctx.fill();
-
-      // Cockpit
-      const cockpitGrad = ctx.createLinearGradient(0, -8, 0, 8);
-      cockpitGrad.addColorStop(0, '#aaddff');
-      cockpitGrad.addColorStop(0.5, '#4488cc');
-      cockpitGrad.addColorStop(1, '#224466');
-      ctx.fillStyle = cockpitGrad;
-      ctx.beginPath();
-      ctx.ellipse(30, 0, 14, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#88bbee';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Engine glow
-      const engineGrad = ctx.createRadialGradient(-68, 0, 2, -68, 0, 18);
-      engineGrad.addColorStop(0, 'rgba(100,200,255,0.9)');
-      engineGrad.addColorStop(0.4, 'rgba(50,150,255,0.5)');
-      engineGrad.addColorStop(1, 'rgba(0,50,200,0)');
-      ctx.fillStyle = engineGrad;
-      ctx.beginPath();
-      ctx.arc(-66, 0, 18, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Engine core
-      ctx.fillStyle = 'rgba(200,240,255,0.8)';
-      ctx.beginPath();
-      ctx.arc(-66, 0, 5, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.shadowBlur = 0;
-      ctx.restore(); // end flipped body drawing
-
-      // ── Draw letter ALWAYS upright (never mirrored) ──
-      // Letter position on fuselage: offset from jet center
-      const letterOffsetX = this.fromRight ? -10 : 10;
-      const lx = x + letterOffsetX;
-      const ly = y;
-
-      // Pulsing circle behind letter
-      const pulse = 0.7 + Math.sin(Date.now() / 400) * 0.3;
-      ctx.fillStyle = `rgba(0,40,20,${pulse * 0.6})`;
-      ctx.beginPath();
-      ctx.arc(lx, ly, 22, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Letter glow
-      ctx.fillStyle = '#00ff88';
-      ctx.shadowColor = 'rgba(0,255,136,0.9)';
-      ctx.shadowBlur = 14;
-      ctx.font = 'bold 36px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(this.letter, lx, ly);
-      ctx.shadowBlur = 0;
-
-      // Letter outline circle
-      ctx.strokeStyle = 'rgba(0,255,136,0.6)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(lx, ly, 22, 0, Math.PI * 2);
-      ctx.stroke();
+  update(dt){
+    const d=this.fromRight?-1:1;this.x+=this.speed*d*dt;this.glowPhase+=dt*3;this.wobble+=dt*2;
+    if(this.wrongFlash>0)this.wrongFlash-=dt*3;
+    if(Math.random()<0.5){this.trailParticles.push({x:this.x+(this.fromRight?30:-30)+(Math.random()-0.5)*10,y:this.y+(Math.random()-0.5)*8,life:1,decay:0.03+Math.random()*0.05,size:Math.random()*2.5+1,color:'rgba(180,100,255'});}
+    for(let i=this.trailParticles.length-1;i>=0;i--){const p=this.trailParticles[i];p.life-=p.decay*dt*60;p.x+=(this.fromRight?0.5:-0.5)*30*dt;if(p.life<=0)this.trailParticles.splice(i,1);}
+    if(this.fromRight&&this.x<-100)this.escaped=true;
+    if(!this.fromRight&&this.x>W+100)this.escaped=true;
+  }
+  draw(ctx){
+    if(!this.alive)return; const x=this.x,y=this.y+Math.sin(this.wobble)*4;
+    for(const p of this.trailParticles){ctx.fillStyle=`${p.color},${p.life*0.6})`;ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();}
+    ctx.save();ctx.translate(x,y);
+    const gp=0.5+Math.sin(this.glowPhase)*0.5;ctx.shadowColor=`rgba(200,100,255,${gp*0.8})`;ctx.shadowBlur=25;
+    if(this.wrongFlash>0){ctx.shadowColor=`rgba(255,50,50,${this.wrongFlash})`;ctx.shadowBlur=35;}
+    const dg=ctx.createLinearGradient(0,-25,0,0);dg.addColorStop(0,'#bbaadd');dg.addColorStop(1,'#665588');
+    ctx.fillStyle=dg;ctx.beginPath();ctx.ellipse(0,-5,28,20,0,Math.PI,0);ctx.fill();
+    const bg=ctx.createLinearGradient(0,-8,0,12);bg.addColorStop(0,'#9988bb');bg.addColorStop(0.5,'#7766aa');bg.addColorStop(1,'#443366');
+    ctx.fillStyle=bg;ctx.beginPath();ctx.ellipse(0,2,48,12,0,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=`rgba(200,150,255,${0.5+gp*0.5})`;ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(0,2,48,12,0,0,Math.PI*2);ctx.stroke();
+    for(let i=-3;i<=3;i++){const bo=Math.sin(this.glowPhase*5+i)>0;ctx.fillStyle=bo?`rgba(200,120,255,${0.5+gp*0.5})`:'rgba(100,60,150,0.3)';ctx.beginPath();ctx.arc(i*10,8,3,0,Math.PI*2);ctx.fill();}
+    ctx.shadowBlur=0;ctx.restore();
+    // Word display
+    const wy=y-2,spacing=24,tw=(this.word.length-1)*spacing,sx=x-tw/2;
+    for(let i=0;i<this.word.length;i++){
+      const lx=sx+i*spacing,ly=wy;
+      if(i<this.typedIndex){ctx.fillStyle='#00ff44';ctx.shadowColor='rgba(0,255,68,0.8)';ctx.shadowBlur=10;ctx.font='bold 30px "Courier New",monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(this.word[i],lx,ly);ctx.shadowBlur=0;ctx.strokeStyle='rgba(0,255,68,0.6)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(lx-8,ly+16);ctx.lineTo(lx,ly+20);ctx.lineTo(lx+8,ly+12);ctx.stroke();}
+      else if(i===this.typedIndex){const p=0.6+Math.sin(Date.now()/250)*0.4;ctx.fillStyle=`rgba(255,220,50,${p})`;ctx.shadowColor='rgba(255,220,50,0.9)';ctx.shadowBlur=16;ctx.font='bold 34px "Courier New",monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(this.word[i],lx,ly);ctx.shadowBlur=0;ctx.strokeStyle=`rgba(255,220,50,${p})`;ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(lx,ly,18,0,Math.PI*2);ctx.stroke();}
+      else{ctx.fillStyle='rgba(150,130,180,0.5)';ctx.font='bold 26px "Courier New",monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(this.word[i],lx,ly);}
     }
   }
+}
 
-  // ─── WORD LIST for UFO ──────────────────────────────
-  const WORDS = ['CAT','DOG','CAR','BUS','SUN','HAT','BED','CUP','BOX',
-    'PEN','RED','BIG','RUN','SIT','TOP','FUN','HOT','MAP','JAM','LEG',
-    'PIG','COW','FAN','MUD','ZIP','FOX','BAT','HUG','YUM','WET'];
-
-  // ─── MATH PROBLEMS for Math Jet ──────────────────────
-  function randomMathProblem() {
-    // simple addition/subtraction, numbers 1-5, answer 1-9
-    const op = Math.random() < 0.5 ? '+' : '-';
-    let a, b, ans;
-    if (op === '+') {
-      a = Math.floor(Math.random() * 5) + 1;
-      b = Math.floor(Math.random() * (6 - a)) + 1;
-      ans = a + b;
-    } else {
-      a = Math.floor(Math.random() * 5) + 2;
-      b = Math.floor(Math.random() * (a - 1)) + 1;
-      ans = a - b;
-    }
-    return { question: `${a} ${op} ${b} = ?`, answer: ans.toString() };
+// ─── MATH JET ───────────────────────────────────────
+class MathJet {
+  constructor(y,problem,fromRight){
+    this.question=problem.question;this.answer=problem.answer;this.y=y;this.fromRight=fromRight;
+    this.x=fromRight?W+80:-80;this.speed=(W+160)/14;
+    this.alive=true;this.hit=false;this.escaped=false;this.playerAnswer='';this.wrongFlash=0;
+    this.trailParticles=[];this.glowPhase=Math.random()*Math.PI*2;
   }
-
-  // ─── UFO (10-combo reward) ──────────────────────────
-  class UFO {
-    constructor(y, word, fromRight) {
-      this.word = word;
-      this.y = y;
-      this.fromRight = fromRight;
-      this.x = fromRight ? canvas.width + 100 : -100;
-      this.speed = (canvas.width + 200) / 18; // slower than regular jets
-      this.alive = true;
-      this.hit = false;
-      this.escaped = false;
-      this.typedIndex = 0; // how many letters correctly typed so far
-      this.wrongFlash = 0;
-      this.trailParticles = [];
-      this.glowPhase = Math.random() * Math.PI * 2;
-      this.wobble = Math.random() * Math.PI * 2;
-    }
-
-    update(dt) {
-      const dir = this.fromRight ? -1 : 1;
-      this.x += this.speed * dir * dt;
-      this.glowPhase += dt * 3;
-      this.wobble += dt * 2;
-      if (this.wrongFlash > 0) this.wrongFlash -= dt * 3;
-
-      // Engine trail
-      if (Math.random() < 0.5) {
-        this.trailParticles.push({
-          x: this.x + (this.fromRight ? 30 : -30) + (Math.random() - 0.5) * 10,
-          y: this.y + (Math.random() - 0.5) * 8,
-          life: 1, decay: 0.03 + Math.random() * 0.05,
-          size: Math.random() * 2.5 + 1,
-          color: 'rgba(180,100,255'
-        });
-      }
-      for (let i = this.trailParticles.length - 1; i >= 0; i--) {
-        const p = this.trailParticles[i];
-        p.life -= p.decay * dt * 60;
-        p.x += (this.fromRight ? 0.5 : -0.5) * 30 * dt;
-        if (p.life <= 0) this.trailParticles.splice(i, 1);
-      }
-
-      const margin = 100;
-      if (this.fromRight && this.x < -margin) this.escaped = true;
-      if (!this.fromRight && this.x > canvas.width + margin) this.escaped = true;
-    }
-
-    draw(ctx) {
-      if (!this.alive) return;
-      const x = this.x;
-      const y = this.y + Math.sin(this.wobble) * 4;
-      const dir = this.fromRight ? -1 : 1;
-
-      // Trail
-      for (const p of this.trailParticles) {
-        ctx.fillStyle = `${p.color},${p.life * 0.6})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.save();
-      ctx.translate(x, y);
-
-      // UFO body glow
-      const glowPulse = 0.5 + Math.sin(this.glowPhase) * 0.5;
-      ctx.shadowColor = `rgba(200,100,255,${glowPulse * 0.8})`;
-      ctx.shadowBlur = 25;
-
-      if (this.wrongFlash > 0) {
-        ctx.shadowColor = `rgba(255,50,50,${this.wrongFlash})`;
-        ctx.shadowBlur = 35;
-      }
-
-      // Saucer dome
-      const domeGrad = ctx.createLinearGradient(0, -25, 0, 0);
-      domeGrad.addColorStop(0, '#bbaadd');
-      domeGrad.addColorStop(1, '#665588');
-      ctx.fillStyle = domeGrad;
-      ctx.beginPath();
-      ctx.ellipse(0, -5, 28, 20, 0, Math.PI, 0);
-      ctx.fill();
-
-      // Saucer body
-      const bodyGrad = ctx.createLinearGradient(0, -8, 0, 12);
-      bodyGrad.addColorStop(0, '#9988bb');
-      bodyGrad.addColorStop(0.5, '#7766aa');
-      bodyGrad.addColorStop(1, '#443366');
-      ctx.fillStyle = bodyGrad;
-      ctx.beginPath();
-      ctx.ellipse(0, 2, 48, 12, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Rim glow ring
-      ctx.strokeStyle = `rgba(200,150,255,${0.5 + glowPulse * 0.5})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.ellipse(0, 2, 48, 12, 0, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Bottom lights
-      for (let i = -3; i <= 3; i++) {
-        const lx = i * 10;
-        const blinkOn = Math.sin(this.glowPhase * 5 + i) > 0;
-        ctx.fillStyle = blinkOn ? `rgba(200,120,255,${0.5 + glowPulse * 0.5})` : 'rgba(100,60,150,0.3)';
-        ctx.beginPath();
-        ctx.arc(lx, 8, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.shadowBlur = 0;
-      ctx.restore();
-
-      // ── WORD display on UFO (always upright) ──
-      this.drawWord(ctx, x, y);
-    }
-
-    drawWord(ctx, x, y) {
-      const wordY = y - 2;
-      const spacing = 24;
-      const totalW = (this.word.length - 1) * spacing;
-      const startX = x - totalW / 2;
-
-      for (let i = 0; i < this.word.length; i++) {
-        const lx = startX + i * spacing;
-        const ly = wordY;
-
-        if (i < this.typedIndex) {
-          // Already typed correctly — bright green
-          ctx.fillStyle = '#00ff44';
-          ctx.shadowColor = 'rgba(0,255,68,0.8)';
-          ctx.shadowBlur = 10;
-          ctx.font = 'bold 30px "Courier New", monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(this.word[i], lx, ly);
-          ctx.shadowBlur = 0;
-          // Checkmark underline
-          ctx.strokeStyle = 'rgba(0,255,68,0.6)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(lx - 8, ly + 16);
-          ctx.lineTo(lx, ly + 20);
-          ctx.lineTo(lx + 8, ly + 12);
-          ctx.stroke();
-        } else if (i === this.typedIndex) {
-          // Current target — pulsing
-          const pulse = 0.6 + Math.sin(Date.now() / 250) * 0.4;
-          ctx.fillStyle = `rgba(255,220,50,${pulse})`;
-          ctx.shadowColor = 'rgba(255,220,50,0.9)';
-          ctx.shadowBlur = 16;
-          ctx.font = 'bold 34px "Courier New", monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(this.word[i], lx, ly);
-          ctx.shadowBlur = 0;
-          // Ring around current
-          ctx.strokeStyle = `rgba(255,220,50,${pulse})`;
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          ctx.arc(lx, ly, 18, 0, Math.PI * 2);
-          ctx.stroke();
-        } else {
-          // Not yet typed — dim
-          ctx.fillStyle = 'rgba(150,130,180,0.5)';
-          ctx.font = 'bold 26px "Courier New", monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(this.word[i], lx, ly);
-        }
-      }
-    }
+  update(dt){
+    const d=this.fromRight?-1:1;this.x+=this.speed*d*dt;this.glowPhase+=dt*5;
+    if(this.wrongFlash>0)this.wrongFlash-=dt*3;
+    if(Math.random()<0.5){this.trailParticles.push({x:this.x+(this.fromRight?50:-50)+(Math.random()-0.5)*6,y:this.y+(Math.random()-0.5)*8,life:1,decay:0.03+Math.random()*0.05,size:Math.random()*2+0.8,color:'rgba(255,80,40'});}
+    for(let i=this.trailParticles.length-1;i>=0;i--){const p=this.trailParticles[i];p.life-=p.decay*dt*60;p.x+=(this.fromRight?0.5:-0.5)*35*dt;if(p.life<=0)this.trailParticles.splice(i,1);}
+    if(this.fromRight&&this.x<-100)this.escaped=true;
+    if(!this.fromRight&&this.x>W+100)this.escaped=true;
   }
-
-  // ─── MATH JET (5-combo reward) ──────────────────────
-  class MathJet {
-    constructor(y, problem, fromRight) {
-      this.question = problem.question;
-      this.answer = problem.answer;
-      this.y = y;
-      this.fromRight = fromRight;
-      this.x = fromRight ? canvas.width + 80 : -80;
-      this.speed = (canvas.width + 160) / 14; // slightly faster than letter jets
-      this.alive = true;
-      this.hit = false;
-      this.escaped = false;
-      this.playerAnswer = '';
-      this.wrongFlash = 0;
-      this.trailParticles = [];
-      this.glowPhase = Math.random() * Math.PI * 2;
-    }
-
-    update(dt) {
-      const dir = this.fromRight ? -1 : 1;
-      this.x += this.speed * dir * dt;
-      this.glowPhase += dt * 5;
-      if (this.wrongFlash > 0) this.wrongFlash -= dt * 3;
-
-      if (Math.random() < 0.5) {
-        this.trailParticles.push({
-          x: this.x + (this.fromRight ? 50 : -50) + (Math.random() - 0.5) * 6,
-          y: this.y + (Math.random() - 0.5) * 8,
-          life: 1, decay: 0.03 + Math.random() * 0.05,
-          size: Math.random() * 2 + 0.8,
-          color: 'rgba(255,80,40'
-        });
-      }
-      for (let i = this.trailParticles.length - 1; i >= 0; i--) {
-        const p = this.trailParticles[i];
-        p.life -= p.decay * dt * 60;
-        p.x += (this.fromRight ? 0.5 : -0.5) * 35 * dt;
-        if (p.life <= 0) this.trailParticles.splice(i, 1);
-      }
-
-      const margin = 100;
-      if (this.fromRight && this.x < -margin) this.escaped = true;
-      if (!this.fromRight && this.x > canvas.width + margin) this.escaped = true;
-    }
-
-    draw(ctx) {
-      if (!this.alive) return;
-      const x = this.x;
-      const y = this.y;
-      const dir = this.fromRight ? -1 : 1;
-
-      // Trail
-      for (const p of this.trailParticles) {
-        ctx.fillStyle = `${p.color},${p.life * 0.7})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.save();
-      ctx.translate(x, y);
-      if (dir === -1) ctx.scale(-1, 1);
-
-      const flashAlpha = this.wrongFlash > 0 ? this.wrongFlash : 0;
-      const glowPulse = 0.5 + Math.sin(this.glowPhase) * 0.5;
-
-      ctx.shadowColor = `rgba(255,${60 - flashAlpha * 30},${30 - flashAlpha * 20},${glowPulse * 0.8})`;
-      ctx.shadowBlur = 20;
-
-      // Jet body — red tinted
-      const bodyGrad = ctx.createLinearGradient(0, -20, 0, 20);
-      bodyGrad.addColorStop(0, '#cc5544');
-      bodyGrad.addColorStop(0.5, '#993322');
-      bodyGrad.addColorStop(1, '#661100');
-      ctx.fillStyle = bodyGrad;
-      ctx.beginPath();
-      ctx.moveTo(65, 0);
-      ctx.lineTo(40, -8); ctx.lineTo(10, -10); ctx.lineTo(-20, -12);
-      ctx.lineTo(-30, -28); ctx.lineTo(-45, -30); ctx.lineTo(-50, -12);
-      ctx.lineTo(-65, -8); ctx.lineTo(-70, -3); ctx.lineTo(-65, 2);
-      ctx.lineTo(-50, 5); ctx.lineTo(-45, 28); ctx.lineTo(-30, 26);
-      ctx.lineTo(-20, 12); ctx.lineTo(10, 10); ctx.lineTo(40, 8);
-      ctx.closePath();
-      ctx.fill();
-
-      // Cockpit
-      const cGrad = ctx.createLinearGradient(0, -8, 0, 8);
-      cGrad.addColorStop(0, '#ffaa88');
-      cGrad.addColorStop(0.5, '#cc6644');
-      cGrad.addColorStop(1, '#883322');
-      ctx.fillStyle = cGrad;
-      ctx.beginPath();
-      ctx.ellipse(30, 0, 14, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Engine
-      const eGrad = ctx.createRadialGradient(-68, 0, 2, -68, 0, 18);
-      eGrad.addColorStop(0, 'rgba(255,150,100,0.9)');
-      eGrad.addColorStop(0.4, 'rgba(255,80,40,0.5)');
-      eGrad.addColorStop(1, 'rgba(200,20,0,0)');
-      ctx.fillStyle = eGrad;
-      ctx.beginPath();
-      ctx.arc(-66, 0, 18, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = 'rgba(255,200,180,0.8)';
-      ctx.beginPath();
-      ctx.arc(-66, 0, 5, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.shadowBlur = 0;
-      ctx.restore();
-
-      // ── Math question display (always upright) ──
-      const qx = x + (this.fromRight ? -10 : 10);
-      const qy = y;
-
-      // Question background
-      const qPulse = 0.6 + Math.sin(Date.now() / 400) * 0.4;
-      ctx.fillStyle = `rgba(60,10,10,${qPulse * 0.7})`;
-      ctx.beginPath();
-      ctx.roundRect(qx - 60, qy - 22, 120, 44, 10);
-      ctx.fill();
-      ctx.strokeStyle = `rgba(255,100,50,${qPulse * 0.8})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(qx - 60, qy - 22, 120, 44, 10);
-      ctx.stroke();
-
-      // Question text
-      ctx.fillStyle = '#ffcc88';
-      ctx.shadowColor = 'rgba(255,150,50,0.8)';
-      ctx.shadowBlur = 8;
-      ctx.font = 'bold 28px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(this.question, qx, qy);
-      ctx.shadowBlur = 0;
-
-      // Show answer being typed
-      if (this.playerAnswer.length > 0) {
-        ctx.fillStyle = '#ffff00';
-        ctx.shadowColor = 'rgba(255,255,0,0.8)';
-        ctx.shadowBlur = 10;
-        ctx.font = 'bold 32px "Courier New", monospace';
-        ctx.fillText(this.playerAnswer, qx + 55, qy);
-        ctx.shadowBlur = 0;
-      }
-    }
+  draw(ctx){
+    if(!this.alive)return; const x=this.x,y=this.y,d=this.fromRight?-1:1;
+    for(const p of this.trailParticles){ctx.fillStyle=`${p.color},${p.life*0.7})`;ctx.beginPath();ctx.arc(p.x,p.y,p.size,0,Math.PI*2);ctx.fill();}
+    ctx.save();ctx.translate(x,y);if(d===-1)ctx.scale(-1,1);
+    const fa=this.wrongFlash>0?this.wrongFlash:0,gp=0.5+Math.sin(this.glowPhase)*0.5;
+    ctx.shadowColor=`rgba(255,${60-fa*30},${30-fa*20},${gp*0.8})`;ctx.shadowBlur=20;
+    const bg=ctx.createLinearGradient(0,-20,0,20);bg.addColorStop(0,'#cc5544');bg.addColorStop(0.5,'#993322');bg.addColorStop(1,'#661100');
+    ctx.fillStyle=bg;ctx.beginPath();
+    ctx.moveTo(65,0);ctx.lineTo(40,-8);ctx.lineTo(10,-10);ctx.lineTo(-20,-12);ctx.lineTo(-30,-28);ctx.lineTo(-45,-30);ctx.lineTo(-50,-12);
+    ctx.lineTo(-65,-8);ctx.lineTo(-70,-3);ctx.lineTo(-65,2);ctx.lineTo(-50,5);ctx.lineTo(-45,28);ctx.lineTo(-30,26);ctx.lineTo(-20,12);ctx.lineTo(10,10);ctx.lineTo(40,8);
+    ctx.closePath();ctx.fill();
+    const cg=ctx.createLinearGradient(0,-8,0,8);cg.addColorStop(0,'#ffaa88');cg.addColorStop(0.5,'#cc6644');cg.addColorStop(1,'#883322');
+    ctx.fillStyle=cg;ctx.beginPath();ctx.ellipse(30,0,14,8,0,0,Math.PI*2);ctx.fill();
+    const eg=ctx.createRadialGradient(-68,0,2,-68,0,18);eg.addColorStop(0,'rgba(255,150,100,0.9)');eg.addColorStop(0.4,'rgba(255,80,40,0.5)');eg.addColorStop(1,'rgba(200,20,0,0)');
+    ctx.fillStyle=eg;ctx.beginPath();ctx.arc(-66,0,18,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='rgba(255,200,180,0.8)';ctx.beginPath();ctx.arc(-66,0,5,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;ctx.restore();
+    // Question box (dynamic width)
+    const qx=x+(this.fromRight?-15:15),qy=y;
+    ctx.font='bold 28px "Courier New",monospace'; ctx.textAlign='center';
+    const tw=ctx.measureText(this.question).width||140, bw=Math.max(200,tw+60), bh=48;
+    const qp=0.6+Math.sin(Date.now()/400)*0.4;
+    ctx.fillStyle=`rgba(60,10,10,${qp*0.7})`;ctx.beginPath();ctx.roundRect(qx-bw/2,qy-bh/2,bw,bh,12);ctx.fill();
+    ctx.strokeStyle=`rgba(255,100,50,${qp*0.8})`;ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(qx-bw/2,qy-bh/2,bw,bh,12);ctx.stroke();
+    ctx.fillStyle='#ffcc88';ctx.shadowColor='rgba(255,150,50,0.8)';ctx.shadowBlur=8;
+    ctx.fillText(this.question,qx-10,qy);ctx.shadowBlur=0;
+    if(this.playerAnswer.length>0){ctx.fillStyle='#ffff00';ctx.shadowColor='rgba(255,255,0,0.8)';ctx.shadowBlur=10;ctx.font='bold 32px "Courier New",monospace';ctx.fillText(this.playerAnswer,qx+bw*0.3,qy);ctx.shadowBlur=0;}
   }
+}
 
-  // ─── MISSILE ───────────────────────────────────────
-  class Missile {
-    constructor(targetJet, launcherX, launcherY) {
-      this.target = targetJet;
-      this.x = launcherX;
-      this.y = launcherY;
-      this.speed = 450; // pixels per second — slower so kids can see the missile fly
-      this.alive = true;
-      this.trailParticles = [];
-    }
-
-    update(dt) {
-      if (!this.target || !this.target.alive) {
-        this.alive = false;
-        return;
-      }
-      const tx = this.target.x;
-      const ty = this.target.y;
-      const dx = tx - this.x;
-      const dy = ty - this.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 25) {
-        this.alive = false;
-        this.target.hit = true;
-        this.target.alive = false;
-        return;
-      }
-      const moveAmount = this.speed * dt;
-      if (moveAmount >= dist) {
-        this.x = tx;
-        this.y = ty;
-        this.alive = false;
-        this.target.hit = true;
-        this.target.alive = false;
-      } else {
-        this.x += (dx / dist) * moveAmount;
-        this.y += (dy / dist) * moveAmount;
-      }
-
-      // Trail
-      this.trailParticles.push({
-        x: this.x + (Math.random() - 0.5) * 3,
-        y: this.y + (Math.random() - 0.5) * 3,
-        life: 1,
-        decay: 0.1 + Math.random() * 0.15
-      });
-      for (let i = this.trailParticles.length - 1; i >= 0; i--) {
-        const p = this.trailParticles[i];
-        p.life -= p.decay * dt * 60;
-        if (p.life <= 0) this.trailParticles.splice(i, 1);
-      }
-    }
-
-    draw(ctx) {
-      // Trail
-      for (const p of this.trailParticles) {
-        ctx.fillStyle = `rgba(255,200,100,${p.life})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 3 * p.life, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Missile body
-      ctx.save();
-      ctx.shadowColor = 'rgba(255,150,50,0.8)';
-      ctx.shadowBlur = 12;
-
-      // Core
-      const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, 8);
-      grad.addColorStop(0, '#ffffff');
-      grad.addColorStop(0.3, '#ffdd88');
-      grad.addColorStop(0.6, '#ff8800');
-      grad.addColorStop(1, 'rgba(255,50,0,0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, 8, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Inner glow
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, 3, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.shadowBlur = 0;
-      ctx.restore();
-    }
+// ─── MISSILE ────────────────────────────────────────
+class Missile {
+  constructor(target,lx,ly){this.target=target;this.x=lx;this.y=ly;this.speed=450;this.alive=true;this.trailParticles=[];}
+  update(dt){
+    if(!this.target||!this.target.alive){this.alive=false;return;}
+    const tx=this.target.x,ty=this.target.y,dx=tx-this.x,dy=ty-this.y,dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<25){this.alive=false;this.target.hit=true;this.target.alive=false;return;}
+    const m=this.speed*dt;if(m>=dist){this.x=tx;this.y=ty;this.alive=false;this.target.hit=true;this.target.alive=false;}
+    else{this.x+=(dx/dist)*m;this.y+=(dy/dist)*m;}
+    this.trailParticles.push({x:this.x+(Math.random()-0.5)*3,y:this.y+(Math.random()-0.5)*3,life:1,decay:0.1+Math.random()*0.15});
+    for(let i=this.trailParticles.length-1;i>=0;i--){const p=this.trailParticles[i];p.life-=p.decay*dt*60;if(p.life<=0)this.trailParticles.splice(i,1);}
   }
-
-  // ─── EXPLOSION PARTICLES ───────────────────────────
-  class Explosion {
-    constructor(x, y) {
-      this.particles = [];
-      const count = 35;
-      for (let i = 0; i < count; i++) {
-        const angle = (Math.PI * 2 / count) * i + Math.random() * 0.3;
-        const speed = 80 + Math.random() * 250;
-        this.particles.push({
-          x, y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          life: 1,
-          decay: 0.01 + Math.random() * 0.025,
-          size: 1.5 + Math.random() * 4,
-          color: ['#ff4400', '#ff8800', '#ffcc00', '#ffffff'][Math.floor(Math.random() * 4)]
-        });
-      }
-      // Shockwave ring
-      this.ringRadius = 5;
-      this.ringMax = 120;
-      this.ringLife = 1;
-      this.x = x;
-      this.y = y;
-      this.alive = true;
-    }
-
-    update(dt) {
-      let anyAlive = false;
-      for (const p of this.particles) {
-        p.life -= p.decay * dt * 60;
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.vy += 100 * dt; // gravity
-        if (p.life > 0) anyAlive = true;
-      }
-      this.ringRadius += 300 * dt;
-      this.ringLife -= 1.2 * dt;
-      if (!anyAlive && this.ringLife <= 0) this.alive = false;
-    }
-
-    draw(ctx) {
-      // Shockwave ring
-      if (this.ringLife > 0) {
-        ctx.strokeStyle = `rgba(255,150,50,${this.ringLife * 0.6})`;
-        ctx.lineWidth = 3 * this.ringLife;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.ringRadius, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.strokeStyle = `rgba(255,220,180,${this.ringLife * 0.4})`;
-        ctx.lineWidth = 6 * this.ringLife;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.ringRadius * 0.7, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
-      // Particles
-      for (const p of this.particles) {
-        if (p.life <= 0) continue;
-        const alpha = p.life;
-        ctx.fillStyle = p.color.replace(')', `,${alpha})`);
-        if (p.color === '#ffffff') {
-          ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-        }
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+  draw(ctx){
+    for(const p of this.trailParticles){ctx.fillStyle=`rgba(255,200,100,${p.life})`;ctx.beginPath();ctx.arc(p.x,p.y,3*p.life,0,Math.PI*2);ctx.fill();}
+    ctx.save();ctx.shadowColor='rgba(255,150,50,0.8)';ctx.shadowBlur=12;
+    const g=ctx.createRadialGradient(this.x,this.y,0,this.x,this.y,8);
+    g.addColorStop(0,'#ffffff');g.addColorStop(0.3,'#ffdd88');g.addColorStop(0.6,'#ff8800');g.addColorStop(1,'rgba(255,50,0,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(this.x,this.y,8,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ffffff';ctx.beginPath();ctx.arc(this.x,this.y,3,0,Math.PI*2);ctx.fill();
+    ctx.shadowBlur=0;ctx.restore();
   }
+}
 
-  // ─── FLOATING SCORE TEXT ──────────────────────────
-  class FloatingText {
-    constructor(x, y, text, color = '#ffdd00') {
-      this.x = x; this.y = y;
-      this.text = text; this.color = color;
-      this.life = 1; this.alive = true;
-    }
-    update(dt) {
-      this.y -= 50 * dt;
-      this.life -= 0.8 * dt;
-      if (this.life <= 0) this.alive = false;
-    }
-    draw(ctx) {
-      const alpha = this.life;
-      let fillColor = this.color;
-      if (fillColor.includes(')')) {
-        fillColor = fillColor.replace(')', `,${alpha})`);
-      } else {
-        // hex color — convert to rgba
-        const r = parseInt(fillColor.slice(1,3), 16);
-        const g = parseInt(fillColor.slice(3,5), 16);
-        const b = parseInt(fillColor.slice(5,7), 16);
-        fillColor = `rgba(${r},${g},${b},${alpha})`;
-      }
-      ctx.fillStyle = fillColor;
-      ctx.font = 'bold 24px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(this.text, this.x, this.y);
-    }
+// ─── EXPLOSION / FLOATING TEXT ──────────────────────
+class Explosion {
+  constructor(x,y){
+    this.particles=[]; const n=35;
+    for(let i=0;i<n;i++){const an=(Math.PI*2/n)*i+Math.random()*0.3,sp=80+Math.random()*250;this.particles.push({x,y,vx:Math.cos(an)*sp,vy:Math.sin(an)*sp,life:1,decay:0.01+Math.random()*0.025,size:1.5+Math.random()*4,color:['#ff4400','#ff8800','#ffcc00','#ffffff'][Math.floor(Math.random()*4)]});}
+    this.ringRadius=5;this.ringLife=1;this.x=x;this.y=y;this.alive=true;
   }
-
-  // ─── GAME OBJECTS ──────────────────────────────────
-  let jets = [];       // regular letter jets
-  let ufos = [];       // special UFOs (word)
-  let mathJets = [];   // special math jets
-  let missiles = [];
-  let explosions = [];
-  let floatingTexts = [];
-  let spawnTimer = 0;
-  let nextSpawnDelay = 3.5;
-  let screenFlash = 0;
-  let keyPressEffect = {}; // { letter: timer }
-  let pendingSpecialSpawn = null; // 'math' | 'ufo' | null
-  let hpRecoveryMilestone = 20000; // next score threshold for +1 HP
-
-  // ─── LAUNCHER ──────────────────────────────────────
-  function getLauncherX() { return canvas.width / 2; }
-  function getLauncherY() { return canvas.height * 0.88; }
-
-  // ─── SPAWN ──────────────────────────────────────────
-  function getRandomY() {
-    const yMin = canvas.height * 0.22;
-    const yMax = canvas.height * 0.62;
-    return yMin + Math.random() * (yMax - yMin);
+  update(dt){
+    let any=false;
+    for(const p of this.particles){p.life-=p.decay*dt*60;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=100*dt;if(p.life>0)any=true;}
+    this.ringRadius+=300*dt;this.ringLife-=1.2*dt; if(!any&&this.ringLife<=0)this.alive=false;
   }
+  draw(ctx){
+    if(this.ringLife>0){ctx.strokeStyle=`rgba(255,150,50,${this.ringLife*0.6})`;ctx.lineWidth=3*this.ringLife;ctx.beginPath();ctx.arc(this.x,this.y,this.ringRadius,0,Math.PI*2);ctx.stroke();}
+    for(const p of this.particles){if(p.life<=0)continue;const a=p.life;let fc=p.color;if(p.color==='#ffffff')fc=`rgba(255,255,255,${a})`;else fc=fc.replace(')',`,${a})`);ctx.fillStyle=fc;ctx.beginPath();ctx.arc(p.x,p.y,p.size*p.life,0,Math.PI*2);ctx.fill();}
+  }
+}
+class FloatingText {
+  constructor(x,y,t,c='#ffdd00'){this.x=x;this.y=y;this.text=t;this.color=c;this.life=1;this.alive=true;}
+  update(dt){this.y-=50*dt;this.life-=0.8*dt;if(this.life<=0)this.alive=false;}
+  draw(ctx){
+    const a=this.life;let fc=this.color;
+    if(fc.includes(')'))fc=fc.replace(')',`,${a})`);
+    else{const r=parseInt(fc.slice(1,3),16),g=parseInt(fc.slice(3,5),16),b=parseInt(fc.slice(5,7),16);fc=`rgba(${r},${g},${b},${a})`;}
+    ctx.fillStyle=fc;ctx.font='bold 24px "Courier New",monospace';ctx.textAlign='center';ctx.fillText(this.text,this.x,this.y);
+  }
+}
 
-  function spawnWave() {
-    // Priority: pending special spawn from combo milestone
-    if (pendingSpecialSpawn === 'ufo') {
-      const word = WORDS[Math.floor(Math.random() * WORDS.length)];
-      const fromR = Math.random() < 0.5;
-      ufos.push(new UFO(getRandomY(), word, fromR));
-      pendingSpecialSpawn = null;
-      floatingTexts.push(new FloatingText(canvas.width / 2, canvas.height * 0.5, '🛸 拼单词!', '#cc88ff'));
+// ─── GAME OBJECTS ───────────────────────────────────
+let jets=[],ufos=[],mathJets=[],missiles=[],explosions=[],floatingTexts=[];
+let spawnTimer=0,screenFlash=0,pendingSpecialSpawn=null,hpRecoveryMilestone=20000;
+
+function getLauncherX(){return W/2;}
+function getLauncherY(){return H*0.88;}
+
+// ─── TOUCH BUTTON STATE ─────────────────────────────
+// Stores positions of clickable buttons for hit-testing
+let touchButtons=[]; // [{x,y,w,h,key}]
+
+// ─── SPAWN ──────────────────────────────────────────
+function getRandomY(){ const yMin=H*0.2,yMax=H*0.58; return yMin+Math.random()*(yMax-yMin); }
+function spawnWave(){
+  if(pendingSpecialSpawn==='ufo'){const wd=WORDS[Math.floor(Math.random()*WORDS.length)];ufos.push(new UFO(getRandomY(),wd,Math.random()<0.5));pendingSpecialSpawn=null;floatingTexts.push(new FloatingText(W/2,H*0.5,'🛸 拼单词!','#cc88ff'));return;}
+  if(pendingSpecialSpawn==='math'){const pb=randomMathProblem();mathJets.push(new MathJet(getRandomY(),pb,Math.random()<0.5));pendingSpecialSpawn=null;floatingTexts.push(new FloatingText(W/2,H*0.5,'🔢 算一算!','#ff8844'));return;}
+  const dualSpawn=Math.random()<0.2,letters='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const l1=letters[Math.floor(Math.random()*26)];let l2;do{l2=letters[Math.floor(Math.random()*26)];}while(l2===l1);
+  jets.push(new Jet(getRandomY(),l1,Math.random()<0.5));
+  if(dualSpawn){let y2;do{y2=getRandomY();}while(Math.abs(y2-jets[0].y)<80);jets.push(new Jet(y2,l2,Math.random()<0.5));}
+}
+
+// ─── HANDLE INPUT (keyboard + touch) ────────────────
+function handleInput(key){
+  initAudio(); const upperKey=key.toUpperCase();
+  if(gameState!==STATE.PLAYING) return;
+  // Number keys for Math Jet
+  if(key>='0'&&key<='9'){
+    const am=mathJets.find(m=>m.alive&&!m.hit&&!m.escaped);
+    if(am){am.playerAnswer+=key; if(am.playerAnswer===am.answer){missiles.push(new Missile(am,getLauncherX(),getLauncherY()));sfxLaunch();}else if(am.playerAnswer.length>=am.answer.length){am.wrongFlash=1;am.playerAnswer='';sfxMiss();screenFlash=Math.max(screenFlash,0.15);}}
+    return;
+  }
+  if(upperKey<'A'||upperKey>'Z') return;
+  // UFO word
+  const au=ufos.find(u=>u.alive&&!u.hit&&!u.escaped);
+  if(au){const nd=au.word[au.typedIndex];if(upperKey===nd){au.typedIndex++;if(au.typedIndex>=au.word.length){missiles.push(new Missile(au,getLauncherX(),getLauncherY()));sfxLaunch();}else{playTone(660,'sine',0.1,0.06);}}else{au.wrongFlash=1;au.typedIndex=0;sfxMiss();screenFlash=Math.max(screenFlash,0.1);}return;}
+  // Regular jets
+  const mj=jets.filter(j=>j.alive&&!j.hit&&j.letter===upperKey);
+  if(mj.length>0){mj.sort((a,b)=>{const ad=a.fromRight?a.x:W-a.x,bd=b.fromRight?b.x:W-b.x;return ad-bd;});missiles.push(new Missile(mj[0],getLauncherX(),getLauncherY()));sfxLaunch();}
+  else{sfxMiss();screenFlash=Math.max(screenFlash,0.15);}
+}
+
+// ─── TOUCH / CLICK HANDLER ──────────────────────────
+function getCanvasPos(e){
+  const rect=canvas.getBoundingClientRect();
+  return {x:(e.clientX||(e.touches&&e.touches[0].clientX)||0)-rect.left,y:(e.clientY||(e.touches&&e.touches[0].clientY)||0)-rect.top};
+}
+function processTap(pos){
+  initAudio();
+  // Check touch buttons
+  for(const btn of touchButtons){
+    if(pos.x>=btn.x&&pos.x<=btn.x+btn.w&&pos.y>=btn.y&&pos.y<=btn.y+btn.h){
+      if(btn.key==='Backspace'){
+        const am=mathJets.find(m=>m.alive&&!m.hit&&!m.escaped);
+        if(am&&am.playerAnswer.length>0) am.playerAnswer=am.playerAnswer.slice(0,-1);
+      } else { handleInput(btn.key); }
       return;
     }
+  }
+  // Tap-to-start on intro / rest screen
+  if(gameState===STATE.INTRO){startGame();return;}
+  if((gameState===STATE.REST||gameState===STATE.OVER)&&Date.now()>=restEndTime){startGame();return;}
+}
+canvas.addEventListener('touchstart',(e)=>{e.preventDefault();processTap(getCanvasPos(e));},{passive:false});
+canvas.addEventListener('mousedown',(e)=>{e.preventDefault();processTap(getCanvasPos(e));});
 
-    if (pendingSpecialSpawn === 'math') {
-      const problem = randomMathProblem();
-      const fromR = Math.random() < 0.5;
-      mathJets.push(new MathJet(getRandomY(), problem, fromR));
-      pendingSpecialSpawn = null;
-      floatingTexts.push(new FloatingText(canvas.width / 2, canvas.height * 0.5, '🔢 算一算!', '#ff8844'));
-      return;
+// ─── KEYBOARD ───────────────────────────────────────
+window.addEventListener('keydown',(e)=>{
+  if(e.repeat) return;
+  initAudio();
+  // Backspace for math
+  if(e.key==='Backspace'){
+    const am=mathJets.find(m=>m.alive&&!m.hit&&!m.escaped);
+    if(am&&am.playerAnswer.length>0){am.playerAnswer=am.playerAnswer.slice(0,-1);e.preventDefault();}
+    return;
+  }
+  if(gameState===STATE.INTRO){startGame();return;}
+  if((gameState===STATE.REST||gameState===STATE.OVER)&&Date.now()>=restEndTime){startGame();return;}
+  handleInput(e.key);
+});
+
+// ─── START / END ────────────────────────────────────
+function startGame(){
+  initAudio(); gameState=STATE.PLAYING; score=0; combo=0; maxCombo=0; hp=MAX_HP;
+  jets=[];ufos=[];mathJets=[];missiles=[];explosions=[];floatingTexts=[];
+  spawnTimer=1.5; screenFlash=0; pendingSpecialSpawn=null; hpRecoveryMilestone=20000;
+}
+function triggerGameOver(){
+  gameState=STATE.OVER; sfxGameOver();
+  restEndTime=Date.now()+5*60*1000; localStorage.setItem(REST_KEY,restEndTime.toString());
+}
+function onLoseLife(x,y){hp--;combo=0;pendingSpecialSpawn=null;screenFlash=0.5;sfxMiss();floatingTexts.push(new FloatingText(x,y,'-1 ❤️','#ff3333'));if(hp<=0)triggerGameOver();}
+function onEntityEscaped(e){if(e.escaped&&e.alive){e.alive=false;onLoseLife(e.x,e.y);}}
+function handleEntityDestroyed(t){
+  const tx=t.x||0,ty=t.y||0; explosions.push(new Explosion(tx,ty)); let pts;
+  if(t instanceof UFO){pts=500;combo++;if(combo>maxCombo)maxCombo=combo;floatingTexts.push(new FloatingText(tx,ty,'+500 🛸!','#cc88ff'));sfxCombo();}
+  else if(t instanceof MathJet){pts=300;combo++;if(combo>maxCombo)maxCombo=combo;floatingTexts.push(new FloatingText(tx,ty,'+300 🔢!','#ff8844'));sfxCombo();}
+  else{combo++;if(combo>maxCombo)maxCombo=combo;pts=100*Math.min(combo,5);floatingTexts.push(new FloatingText(tx,ty,combo>1?`+${pts} x${combo}`:`+${pts}`,combo>2?'#ff8800':'#ffdd00'));sfxHit();if(combo>1&&combo%3===0)sfxCombo();}
+  score+=pts;
+  if(score>=hpRecoveryMilestone&&hp<MAX_HP){hp++;floatingTexts.push(new FloatingText(W/2,H*0.4,'+1 ❤️ 恢复!','#00ff88'));sfxCombo();hpRecoveryMilestone+=20000;}
+  if(combo>=10&&pendingSpecialSpawn!=='ufo')pendingSpecialSpawn='ufo';
+  else if(combo>=5&&pendingSpecialSpawn!=='math'&&pendingSpecialSpawn!=='ufo')pendingSpecialSpawn='math';
+}
+
+// ─── DRAW GROUND ────────────────────────────────────
+function drawGround(){
+  const gy=H*0.85, lx=getLauncherX(), ly=getLauncherY();
+  const gd=ctx.createLinearGradient(0,gy,0,H);gd.addColorStop(0,'#1a1a2e');gd.addColorStop(0.3,'#16213e');gd.addColorStop(1,'#0f0f23');ctx.fillStyle=gd;ctx.fillRect(0,gy,W,H-gy);
+  ctx.strokeStyle='rgba(0,150,255,0.08)';ctx.lineWidth=1;const gs=40;
+  for(let x=gs;x<W;x+=gs){ctx.beginPath();ctx.moveTo(x,gy);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=gy+gs;y<H;y+=gs){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  const hg=ctx.createLinearGradient(0,gy-2,0,gy+4);hg.addColorStop(0,'rgba(0,150,255,0.3)');hg.addColorStop(0.5,'rgba(0,180,255,0.5)');hg.addColorStop(1,'rgba(0,100,255,0)');ctx.fillStyle=hg;ctx.fillRect(0,gy-2,W,6);
+  ctx.fillStyle='#2a2a3e';ctx.strokeStyle='rgba(0,180,255,0.5)';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(lx-50,ly+5);ctx.lineTo(lx-35,ly-10);ctx.lineTo(lx+35,ly-10);ctx.lineTo(lx+50,ly+5);ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.fillStyle='#1a1a30';ctx.strokeStyle='rgba(0,200,255,0.6)';ctx.lineWidth=2;ctx.fillRect(lx-10,ly-30,20,25);ctx.strokeRect(lx-10,ly-30,20,25);
+  const sg=ctx.createRadialGradient(lx,ly-18,2,lx,ly-18,15);sg.addColorStop(0,'rgba(0,200,255,0.4)');sg.addColorStop(1,'rgba(0,100,255,0)');ctx.fillStyle=sg;ctx.beginPath();ctx.arc(lx,ly-18,15,0,Math.PI*2);ctx.fill();
+  const ra=Date.now()/3000*Math.PI*2;ctx.strokeStyle='rgba(0,220,255,0.4)';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(lx+40,ly-20,12,0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.moveTo(lx+40,ly-20);ctx.lineTo(lx+40+Math.cos(ra)*10,ly-20+Math.sin(ra)*10);ctx.stroke();
+}
+
+// ─── TOUCH BUTTONS ──────────────────────────────────
+function drawTouchButtons(){
+  touchButtons=[]; // reset each frame
+  const lx=getLauncherX();
+  const activeJets=jets.filter(j=>j.alive&&!j.hit&&!j.escaped);
+  const activeUFO=ufos.find(u=>u.alive&&!u.hit&&!u.escaped);
+  const activeMath=mathJets.find(m=>m.alive&&!m.hit&&!m.escaped);
+
+  // Button area: bottom portion of screen
+  const areaTop=H*0.75;
+  const areaH=H-areaTop-10;
+
+  // ── UFO word buttons ──
+  if(activeUFO){
+    const w=activeUFO.word, ti=activeUFO.typedIndex, n=w.length;
+    const btnSize=Math.min(64,(W-40)/n-8);
+    const totalW=n*(btnSize+8)-8;
+    let sx=(W-totalW)/2;
+    const by=areaTop+Math.max(10,(areaH-btnSize)/2);
+
+    ctx.fillStyle='rgba(200,120,255,0.4)'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('依次点击字母拼单词!',lx,by-14);
+
+    for(let i=0;i<n;i++){
+      const bx=sx+i*(btnSize+8);
+      const isCur=(i===ti), isDone=i<ti;
+      const pulse=0.5+Math.sin(Date.now()/400+i)*0.5;
+
+      ctx.fillStyle=isDone?'rgba(0,180,40,0.7)':isCur?`rgba(180,80,255,${0.5+pulse*0.4})`:'rgba(30,20,50,0.4)';
+      ctx.shadowColor=isCur?`rgba(200,120,255,${0.7+pulse*0.3})`:isDone?'rgba(0,255,68,0.5)':'transparent';
+      ctx.shadowBlur=isCur?14:isDone?6:0;
+      ctx.beginPath();ctx.roundRect(bx,by,btnSize,btnSize,14);ctx.fill();
+
+      ctx.strokeStyle=isCur?'rgba(200,140,255,0.9)':isDone?'rgba(0,255,68,0.6)':'rgba(100,80,130,0.35)';
+      ctx.lineWidth=isCur?3:2;ctx.beginPath();ctx.roundRect(bx,by,btnSize,btnSize,14);ctx.stroke();
+      ctx.shadowBlur=0;
+
+      ctx.fillStyle=isCur?'#ffdd44':isDone?'#00ff44':'rgba(150,120,180,0.5)';
+      ctx.font=`bold ${btnSize*0.5}px "Courier New",monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(w[i],bx+btnSize/2,by+btnSize/2);
+
+      if(isCur) touchButtons.push({x:bx,y:by,w:btnSize,h:btnSize,key:w[i]});
     }
-
-    // Normal spawn: 1 or 2 letter jets
-    const dualSpawn = Math.random() < 0.2;
-    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const letter1 = letters[Math.floor(Math.random() * 26)];
-    let letter2;
-    do { letter2 = letters[Math.floor(Math.random() * 26)]; } while (letter2 === letter1);
-
-    const fromRight1 = Math.random() < 0.5;
-    const y1 = getRandomY();
-    jets.push(new Jet(y1, letter1, fromRight1));
-
-    if (dualSpawn) {
-      const fromRight2 = Math.random() < 0.5;
-      let y2;
-      do { y2 = getRandomY(); } while (Math.abs(y2 - y1) < 80);
-      jets.push(new Jet(y2, letter2, fromRight2));
-    }
+    return;
   }
 
-  // ─── HANDLE KEY PRESS ──────────────────────────────
-  function handleKey(key) {
-    initAudio();
-    const upperKey = key.toUpperCase();
+  // ── Math number pad ──
+  if(activeMath){
+    const numKeys=['1','2','3','4','5','6','7','8','9','⌫','0'];
+    const cols=4, rows=3;
+    const btnW=Math.min(72,(W-40)/cols-6);
+    const btnH=Math.min(60,btnW*0.85);
+    const totalW=cols*(btnW+6)-6;
+    const totalH=rows*(btnH+6)-6;
+    let sx=(W-totalW)/2;
+    const sy=areaTop+Math.max(5,(areaH-totalH)/2)-8;
 
-    if (gameState !== STATE.PLAYING) return;
+    ctx.fillStyle='rgba(255,140,80,0.4)'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('点击数字回答!',lx,sy-12);
 
-    // ── Number keys for Math Jet ──
-    if (key >= '0' && key <= '9') {
-      const activeMath = mathJets.find(m => m.alive && !m.hit && !m.escaped);
-      if (activeMath) {
-        activeMath.playerAnswer += key;
-        // Check if answer is complete
-        if (activeMath.playerAnswer === activeMath.answer) {
-          // Correct! Fire missile
-          missiles.push(new Missile(activeMath, getLauncherX(), getLauncherY()));
-          sfxLaunch();
-        } else if (activeMath.playerAnswer.length >= activeMath.answer.length) {
-          // Wrong answer — flash and reset
-          activeMath.wrongFlash = 1;
-          activeMath.playerAnswer = '';
-          sfxMiss();
-          screenFlash = Math.max(screenFlash, 0.15);
-        }
-        // Still typing — no feedback yet, just show digits
-      }
-      return;
+    for(let i=0;i<numKeys.length;i++){
+      const col=i%cols, row=Math.floor(i/cols);
+      const bx=sx+col*(btnW+6), by=sy+row*(btnH+6);
+      const pulse=0.5+Math.sin(Date.now()/300+col+row)*0.4;
+
+      ctx.fillStyle=`rgba(255,80,30,${0.2+pulse*0.3})`;ctx.shadowColor='rgba(255,100,50,0.6)';ctx.shadowBlur=8;
+      ctx.beginPath();ctx.roundRect(bx,by,btnW,btnH,10);ctx.fill();
+      ctx.shadowBlur=0;
+      ctx.strokeStyle='rgba(255,140,80,0.6)';ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(bx,by,btnW,btnH,10);ctx.stroke();
+
+      ctx.fillStyle='#ffffff';ctx.font=`bold ${btnW*0.45}px "Courier New",monospace`;ctx.textAlign='center';ctx.textBaseline='middle';
+      const label=numKeys[i]==='⌫'?'⌫':numKeys[i];
+      ctx.fillText(label,bx+btnW/2,by+btnH/2);
+
+      if(numKeys[i]==='⌫') touchButtons.push({x:bx,y:by,w:btnW,h:btnH,key:'Backspace'});
+      else touchButtons.push({x:bx,y:by,w:btnW,h:btnH,key:numKeys[i]});
     }
-
-    if (upperKey < 'A' || upperKey > 'Z') return;
-
-    // Visual feedback
-    keyPressEffect[upperKey] = 0.5;
-
-    // ── Letter keys for UFO word typing ──
-    const activeUFO = ufos.find(u => u.alive && !u.hit && !u.escaped);
-    if (activeUFO) {
-      const needed = activeUFO.word[activeUFO.typedIndex];
-      if (upperKey === needed) {
-        activeUFO.typedIndex++;
-        if (activeUFO.typedIndex >= activeUFO.word.length) {
-          // All letters correct! Fire missile
-          missiles.push(new Missile(activeUFO, getLauncherX(), getLauncherY()));
-          sfxLaunch();
-        } else {
-          // Correct letter, but more to go
-          playTone(660, 'sine', 0.1, 0.06);
-        }
-      } else {
-        // Wrong letter — flash UFO and reset
-        activeUFO.wrongFlash = 1;
-        activeUFO.typedIndex = 0;
-        sfxMiss();
-        screenFlash = Math.max(screenFlash, 0.1);
-      }
-      return; // UFO takes priority over regular jets when active
-    }
-
-    // ── Regular jet letter matching ──
-    const matchingJets = jets.filter(j => j.alive && !j.hit && j.letter === upperKey);
-
-    if (matchingJets.length > 0) {
-      matchingJets.sort((a, b) => {
-        const aDist = a.fromRight ? a.x : canvas.width - a.x;
-        const bDist = b.fromRight ? b.x : canvas.width - b.x;
-        return aDist - bDist;
-      });
-      const target = matchingJets[0];
-      missiles.push(new Missile(target, getLauncherX(), getLauncherY()));
-      sfxLaunch();
-    } else {
-      sfxMiss();
-      screenFlash = Math.max(screenFlash, 0.15);
-    }
+    // Also handle backspace via touch button
+    const origInput=handleInput;
+    // Add backspace handling
+    return;
   }
 
-  // ─── KEYBOARD EVENTS ──────────────────────────────
-  window.addEventListener('keydown', (e) => {
-    if (e.repeat) return;
-    const key = e.key;
-
-    if (key === ' ' || key === 'Spacebar') {
-      e.preventDefault();
-      if (gameState === STATE.MENU) {
-        startGame();
-      } else if (gameState === STATE.REST && Date.now() >= restEndTime) {
-        startGame();
-      } else if (gameState === STATE.OVER && Date.now() >= restEndTime) {
-        startGame();
-      }
-      return;
-    }
-
-    handleKey(key);
-  });
-
-  // ─── START GAME ────────────────────────────────────
-  function startGame() {
-    initAudio();
-    gameState = STATE.PLAYING;
-    score = 0;
-    combo = 0;
-    maxCombo = 0;
-    hp = MAX_HP;
-    jets = [];
-    ufos = [];
-    mathJets = [];
-    missiles = [];
-    explosions = [];
-    floatingTexts = [];
-    spawnTimer = 3;
-    screenFlash = 0;
-    keyPressEffect = {};
-    pendingSpecialSpawn = null;
-    hpRecoveryMilestone = 20000;
+  // ── Regular letter buttons ──
+  const letters=activeJets.map(j=>j.letter);
+  if(letters.length===0){
+    ctx.fillStyle='rgba(150,180,200,0.3)';ctx.font='13px "Courier New",monospace';ctx.textAlign='center';
+    ctx.fillText('等待敌机出现...',lx,areaTop+areaH/2);
+    return;
   }
 
-  // ─── GAME OVER ─────────────────────────────────────
-  function triggerGameOver() {
-    gameState = STATE.OVER;
-    sfxGameOver();
-    restEndTime = Date.now() + 5 * 60 * 1000; // 5 minutes
-    localStorage.setItem(REST_KEY, restEndTime.toString());
-    setTimeout(() => { gameState = STATE.MENU; }, 100);
+  const n=letters.length;
+  const btnSize=Math.min(72,(W-40)/n-12);
+  const totalW=n*btnSize+(n-1)*12;
+  let sx=(W-totalW)/2;
+  const by=areaTop+Math.max(10,(areaH-btnSize)/2);
+
+  ctx.fillStyle='rgba(0,255,136,0.5)';ctx.font='13px sans-serif';ctx.textAlign='center';
+  ctx.fillText('点击字母发射导弹!',lx,by-14);
+
+  for(let i=0;i<n;i++){
+    const bx=sx+i*(btnSize+12);
+    const pulse=0.5+Math.sin(Date.now()/350+i)*0.5;
+    ctx.fillStyle=`rgba(0,200,80,${0.4+pulse*0.4})`;ctx.shadowColor='rgba(0,255,136,0.8)';ctx.shadowBlur=12;
+    ctx.beginPath();ctx.roundRect(bx,by,btnSize,btnSize,16);ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.strokeStyle=`rgba(0,255,136,${0.7+pulse*0.3})`;ctx.lineWidth=3;ctx.beginPath();ctx.roundRect(bx,by,btnSize,btnSize,16);ctx.stroke();
+
+    ctx.fillStyle='#ffffff';ctx.font=`bold ${btnSize*0.5}px "Courier New",monospace`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(letters[i],bx+btnSize/2,by+btnSize/2);
+    touchButtons.push({x:bx,y:by,w:btnSize,h:btnSize,key:letters[i]});
   }
+}
 
-  // ─── ENTITY DESTROYED (hit by missile) ──────────────
-  function handleEntityDestroyed(target) {
-    const tx = target.x || 0;
-    const ty = target.y || 0;
-    explosions.push(new Explosion(tx, ty));
+// ─── TARGET PROMPT ──────────────────────────────────
+function drawTargetPrompt(){
+  const lx=getLauncherX(),ly=getLauncherY()-60;
+  const aj=jets.filter(j=>j.alive&&!j.hit&&!j.escaped);
+  const au=ufos.find(u=>u.alive&&!u.hit&&!u.escaped);
+  const am=mathJets.find(m=>m.alive&&!m.hit&&!m.escaped);
 
-    let points;
-    if (target instanceof UFO) {
-      points = 500;
-      combo++;
-      if (combo > maxCombo) maxCombo = combo;
-      floatingTexts.push(new FloatingText(tx, ty, `+${points} 🛸!`, '#cc88ff'));
-      sfxCombo();
-    } else if (target instanceof MathJet) {
-      points = 300;
-      combo++;
-      if (combo > maxCombo) maxCombo = combo;
-      floatingTexts.push(new FloatingText(tx, ty, `+${points} 🔢!`, '#ff8844'));
-      sfxCombo();
-    } else {
-      combo++;
-      if (combo > maxCombo) maxCombo = combo;
-      points = 100 * Math.min(combo, 5);
-      floatingTexts.push(new FloatingText(tx, ty,
-        combo > 1 ? `+${points} x${combo}` : `+${points}`,
-        combo > 2 ? '#ff8800' : '#ffdd00'));
-      sfxHit();
-      if (combo > 1 && combo % 3 === 0) sfxCombo();
+  if(au){
+    const w=au.word,ti=au.typedIndex,spacing=42,tw=(w.length-1)*spacing; let sx=lx-tw/2;
+    for(let i=0;i<w.length;i++){
+      const bx=sx+i*spacing,by=ly,isCur=(i===ti),isDone=i<ti,pulse=0.5+Math.sin(Date.now()/400+i)*0.5;
+      if(isCur){const gg=ctx.createRadialGradient(bx,by,6,bx,by,38);gg.addColorStop(0,`rgba(200,120,255,${pulse})`);gg.addColorStop(1,'rgba(100,50,200,0)');ctx.fillStyle=gg;ctx.beginPath();ctx.arc(bx,by,38,0,Math.PI*2);ctx.fill();}
+      ctx.fillStyle=isDone?'rgba(0,40,15,0.7)':isCur?`rgba(40,10,60,${0.5+pulse*0.3})`:'rgba(20,15,30,0.4)';
+      ctx.strokeStyle=isCur?`rgba(200,120,255,${0.7+pulse*0.3})`:isDone?'rgba(0,255,68,0.5)':'rgba(100,80,130,0.3)';
+      ctx.lineWidth=isCur?3:1.5;ctx.beginPath();ctx.roundRect(bx-26,by-26,52,52,10);ctx.fill();ctx.stroke();
+      ctx.fillStyle=isCur?'#ffdd44':isDone?'#00ff44':'rgba(150,120,180,0.5)';
+      ctx.shadowColor=isCur?'rgba(255,220,68,0.9)':isDone?'rgba(0,255,68,0.5)':'transparent';ctx.shadowBlur=isCur?12:isDone?6:0;
+      ctx.font='bold 36px "Courier New",monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(w[i],bx,by);ctx.shadowBlur=0;
     }
-
-    score += points;
-
-    // Check HP recovery at 20k milestones
-    if (score >= hpRecoveryMilestone && hp < MAX_HP) {
-      hp++;
-      floatingTexts.push(new FloatingText(
-        canvas.width / 2, canvas.height * 0.4,
-        '+1 ❤️ 恢复!', '#00ff88'));
-      sfxCombo();
-      hpRecoveryMilestone += 20000;
-    }
-
-    // Check combo milestones for special spawns
-    if (combo >= 10 && pendingSpecialSpawn !== 'ufo') {
-      pendingSpecialSpawn = 'ufo';
-    } else if (combo >= 5 && pendingSpecialSpawn !== 'math' && pendingSpecialSpawn !== 'ufo') {
-      pendingSpecialSpawn = 'math';
-    }
+    ctx.fillStyle='rgba(220,180,255,0.7)';ctx.font='bold 14px sans-serif';ctx.textAlign='center';ctx.fillText('依次点击字母拼单词!',lx,ly-38);return;
   }
-
-  // ─── JET ESCAPED ──────────────────────────────────
-  function onJetEscaped(jet) {
-    if (jet.escaped && jet.alive) {
-      jet.alive = false;
-      onLoseLife(jet.x, jet.y);
-    }
+  if(am){
+    const pulse=0.5+Math.sin(Date.now()/500)*0.5;
+    const gg=ctx.createRadialGradient(lx,ly,8,lx,ly,70);gg.addColorStop(0,`rgba(255,120,50,${pulse*0.7})`);gg.addColorStop(1,'rgba(200,50,0,0)');ctx.fillStyle=gg;ctx.beginPath();ctx.arc(lx,ly,70,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=`rgba(50,10,0,${0.5+pulse*0.3})`;ctx.strokeStyle=`rgba(255,100,50,${0.7+pulse*0.3})`;ctx.lineWidth=3;ctx.beginPath();ctx.roundRect(lx-110,ly-30,220,60,12);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#ffcc88';ctx.font='bold 28px "Courier New",monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(am.question,lx-15,ly-1);
+    if(am.playerAnswer){ctx.fillStyle='#ffff44';ctx.shadowColor='rgba(255,255,68,0.9)';ctx.shadowBlur=10;ctx.font='bold 36px "Courier New",monospace';ctx.fillText(am.playerAnswer,lx+75,ly-1);ctx.shadowBlur=0;}
+    ctx.fillStyle='rgba(255,200,150,0.7)';ctx.font='bold 14px sans-serif';ctx.textAlign='center';ctx.fillText('点击数字回答!',lx,ly-44);return;
   }
+  // Regular letter jets: no top prompt needed — buttons at bottom are enough
+}
 
-  function onEntityEscaped(entity) {
-    if (entity.escaped && entity.alive) {
-      entity.alive = false;
-      onLoseLife(entity.x, entity.y);
-    }
+// ─── HUD ────────────────────────────────────────────
+function drawHUD(){
+  ctx.fillStyle='#ffffff';ctx.font='bold 22px "Courier New",monospace';ctx.textAlign='left';ctx.fillText(`得分: ${score}`,20,30);
+  if(combo>1){ctx.fillStyle='#ffdd00';ctx.font='bold 18px "Courier New",monospace';ctx.fillText(`COMBO x${combo}`,20,52);}
+  ctx.textAlign='right'; const hs=Array.from({length:MAX_HP},(_,i)=>i<hp?'❤️':'🖤').join('');
+  ctx.font='28px sans-serif';ctx.fillText(hs,W-20,30);
+  if(maxCombo>1){ctx.fillStyle='rgba(255,200,100,0.7)';ctx.font='14px "Courier New",monospace';ctx.fillText(`最高连击: ${maxCombo}`,W-20,55);}
+  if(hpRecoveryMilestone>20000&&hp<MAX_HP){ctx.fillStyle='rgba(0,255,136,0.4)';ctx.font='12px "Courier New",monospace';ctx.textAlign='right';ctx.fillText(`下次回血: ${hpRecoveryMilestone}分`,W-20,72);}
+}
+
+// ─── INTRO SCREEN ───────────────────────────────────
+function drawIntroScreen(){
+  const elapsed=(Date.now()-introStart)/1000;
+  const fadeIn=Math.min(1,elapsed/0.8);
+
+  ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='#00ff88';ctx.shadowColor='rgba(0,255,136,0.8)';ctx.shadowBlur=20;ctx.globalAlpha=fadeIn;
+  ctx.font='bold 48px "Courier New",monospace';ctx.textAlign='center';ctx.fillText('字 母 导 弹',W/2,H*0.32);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#aaccee';ctx.font='18px "Courier New",monospace';ctx.fillText('LETTER MISSILE',W/2,H*0.32+38);
+
+  ctx.fillStyle='rgba(200,220,240,0.85)';ctx.font='15px "Courier New",monospace';
+  ctx.fillText('🛸 点击字母键发射导弹击落敌机!',W/2,H*0.48);
+  ctx.globalAlpha=1;
+}
+
+// ─── REST SCREEN ────────────────────────────────────
+function drawRestScreen(){
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,H);
+  const rem=Math.max(0,Math.ceil((restEndTime-Date.now())/1000));
+  const mm=Math.floor(rem/60),ss=rem%60,ts=`${mm}:${ss.toString().padStart(2,'0')}`;
+  ctx.fillStyle='#ff8888';ctx.shadowColor='rgba(255,100,100,0.6)';ctx.shadowBlur=15;
+  ctx.font='bold 36px "Courier New",monospace';ctx.textAlign='center';ctx.fillText('休 息 一 下',W/2,H*0.32);ctx.shadowBlur=0;
+  ctx.fillStyle='#ccccee';ctx.font='18px "Courier New",monospace';ctx.fillText('保护眼睛，休息5分钟后再玩哦~',W/2,H*0.40);
+  ctx.fillStyle='#ffffff';ctx.font='bold 56px "Courier New",monospace';ctx.fillText(ts,W/2,H*0.52);
+  if(rem<=0){
+    const pulse=0.6+Math.sin(Date.now()/600)*0.4;
+    ctx.fillStyle=`rgba(0,255,136,${pulse})`;ctx.font='bold 28px "Courier New",monospace';
+    ctx.fillText('点击屏幕 重新开始',W/2,H*0.65);
+    // Draw tap button
+    const bw=220,bh=56,bx=W/2-bw/2,by2=H*0.64-bh/2-10;
+    ctx.fillStyle=`rgba(0,255,136,${0.15+pulse*0.15})`;ctx.beginPath();ctx.roundRect(bx,by2,bw,bh,16);ctx.fill();
+    ctx.strokeStyle=`rgba(0,255,136,${0.5+pulse*0.3})`;ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(bx,by2,bw,bh,16);ctx.stroke();
   }
-
-  function onLoseLife(x, y) {
-    hp--;
-    combo = 0;
-    pendingSpecialSpawn = null;
-    screenFlash = 0.5;
-    sfxMiss();
-    floatingTexts.push(new FloatingText(x, y, '-1 ❤️', '#ff3333'));
-
-    if (hp <= 0) {
-      triggerGameOver();
-    }
-  }
-
-  // ─── DRAW GROUND ───────────────────────────────────
-  function drawGround() {
-    const groundY = canvas.height * 0.85;
-
-    // Ground surface
-    const grad = ctx.createLinearGradient(0, groundY, 0, canvas.height);
-    grad.addColorStop(0, '#1a1a2e');
-    grad.addColorStop(0.3, '#16213e');
-    grad.addColorStop(1, '#0f0f23');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
-
-    // Grid lines (tech feel)
-    ctx.strokeStyle = 'rgba(0,150,255,0.08)';
-    ctx.lineWidth = 1;
-    const gridSize = 40;
-    for (let x = gridSize; x < canvas.width; x += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(x, groundY);
-      ctx.lineTo(x, canvas.height);
-      ctx.stroke();
-    }
-    for (let y = groundY + gridSize; y < canvas.height; y += gridSize) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(canvas.width, y);
-      ctx.stroke();
-    }
-
-    // Horizon glow line
-    const horizonGrad = ctx.createLinearGradient(0, groundY - 2, 0, groundY + 4);
-    horizonGrad.addColorStop(0, 'rgba(0,150,255,0.3)');
-    horizonGrad.addColorStop(0.5, 'rgba(0,180,255,0.5)');
-    horizonGrad.addColorStop(1, 'rgba(0,100,255,0)');
-    ctx.fillStyle = horizonGrad;
-    ctx.fillRect(0, groundY - 2, canvas.width, 6);
-
-    // Launch platform
-    const lx = getLauncherX();
-    const ly = getLauncherY();
-
-    // Platform
-    ctx.fillStyle = '#2a2a3e';
-    ctx.strokeStyle = 'rgba(0,180,255,0.5)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(lx - 50, ly + 5);
-    ctx.lineTo(lx - 35, ly - 10);
-    ctx.lineTo(lx + 35, ly - 10);
-    ctx.lineTo(lx + 50, ly + 5);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    // Missile silo
-    ctx.fillStyle = '#1a1a30';
-    ctx.strokeStyle = 'rgba(0,200,255,0.6)';
-    ctx.lineWidth = 2;
-    ctx.fillRect(lx - 10, ly - 30, 20, 25);
-    ctx.strokeRect(lx - 10, ly - 30, 20, 25);
-
-    // Silo glow
-    const siloGlow = ctx.createRadialGradient(lx, ly - 18, 2, lx, ly - 18, 15);
-    siloGlow.addColorStop(0, 'rgba(0,200,255,0.4)');
-    siloGlow.addColorStop(1, 'rgba(0,100,255,0)');
-    ctx.fillStyle = siloGlow;
-    ctx.beginPath();
-    ctx.arc(lx, ly - 18, 15, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Targeting radar dish
-    const radarAngle = Date.now() / 3000 * Math.PI * 2;
-    ctx.strokeStyle = 'rgba(0,220,255,0.4)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(lx + 40, ly - 20, 12, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(lx + 40, ly - 20);
-    ctx.lineTo(lx + 40 + Math.cos(radarAngle) * 10, ly - 20 + Math.sin(radarAngle) * 10);
-    ctx.stroke();
-  }
-
-  // ─── DRAW KEYBOARD HINTS ──────────────────────────
-  function drawKeyboardHints() {
-    const activeUFO = ufos.find(u => u.alive && !u.hit && !u.escaped);
-    const activeMath = mathJets.find(m => m.alive && !m.hit && !m.escaped);
-    const activeLetters = new Set(jets.filter(j => j.alive && !j.hit && !j.escaped).map(j => j.letter));
-
-    const rows = [
-      'QWERTYUIOP'.split(''),
-      'ASDFGHJKL'.split(''),
-      'ZXCVBNM'.split('')
-    ];
-
-    const keyW = Math.min(36, (canvas.width - 40) / 12);
-    const keyH = keyW * 0.9;
-    const startY = canvas.height - keyH * 3.5 - 28;
-
-    rows.forEach((row, rowIdx) => {
-      const offsetX = rowIdx === 0 ? keyW * 0.5 : rowIdx === 1 ? keyW * 0.8 : keyW * 1.2;
-      const totalW = row.length * keyW + keyW * 0.3;
-      const startX = (canvas.width - totalW) / 2 + offsetX;
-
-      row.forEach((letter, i) => {
-        const kx = startX + i * (keyW + 2);
-        const ky = startY + rowIdx * (keyH + 4);
-        let isActive = activeLetters.has(letter);
-        let isUfoTarget = false;
-        let glowColor = 'rgba(0,255,136';
-
-        // UFO: highlight the next needed letter
-        if (activeUFO) {
-          const neededIdx = activeUFO.typedIndex;
-          if (neededIdx < activeUFO.word.length && activeUFO.word[neededIdx] === letter) {
-            isUfoTarget = true;
-            glowColor = 'rgba(200,120,255';
-          }
-        }
-
-        const pressFlash = keyPressEffect[letter] || 0;
-
-        if (isUfoTarget) {
-          const pulseAlpha = 0.5 + Math.sin(Date.now() / 250) * 0.5;
-          ctx.fillStyle = `${glowColor},${pulseAlpha})`;
-          ctx.shadowColor = 'rgba(200,120,255,0.9)';
-          ctx.shadowBlur = 14;
-        } else if (isActive) {
-          const pulseAlpha = 0.5 + Math.sin(Date.now() / 300) * 0.3;
-          ctx.fillStyle = `rgba(0,255,136,${pulseAlpha})`;
-          ctx.shadowColor = 'rgba(0,255,136,0.8)';
-          ctx.shadowBlur = 12;
-        } else if (pressFlash > 0) {
-          ctx.fillStyle = `rgba(255,80,80,${pressFlash})`;
-          ctx.shadowColor = 'rgba(255,80,80,0.6)';
-          ctx.shadowBlur = 6;
-        } else {
-          ctx.fillStyle = 'rgba(20,25,35,0.25)';
-          ctx.shadowBlur = 0;
-        }
-
-        ctx.fillRect(kx, ky, keyW, keyH);
-        ctx.shadowBlur = 0;
-
-        ctx.strokeStyle = isUfoTarget ? 'rgba(200,120,255,0.8)' :
-          isActive ? 'rgba(0,255,136,0.8)' : 'rgba(40,50,70,0.15)';
-        ctx.lineWidth = (isActive || isUfoTarget) ? 3 : 0.5;
-        ctx.strokeRect(kx, ky, keyW, keyH);
-
-        ctx.fillStyle = isUfoTarget ? '#ffffff' :
-          isActive ? '#ffffff' : 'rgba(80,100,130,0.25)';
-        ctx.font = `bold ${keyW * 0.45}px "Courier New", monospace`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(letter, kx + keyW / 2, ky + keyH / 2);
-      });
-    });
-
-    // Number key row for math jet
-    if (activeMath) {
-      const numKeys = ['1','2','3','4','5','6','7','8','9','0'];
-      const numW = Math.min(32, (canvas.width - 20) / 12);
-      const numH = numW * 0.9;
-      const numStartY = canvas.height - numH * 1.2 - 8;
-      const numTotalW = numKeys.length * (numW + 2);
-      const numStartX = (canvas.width - numTotalW) / 2;
-
-      numKeys.forEach((num, i) => {
-        const nx = numStartX + i * (numW + 2);
-        const ny = numStartY;
-        const pulse = 0.5 + Math.sin(Date.now() / 300) * 0.5;
-        ctx.fillStyle = `rgba(255,100,50,${0.3 + pulse * 0.4})`;
-        ctx.shadowColor = 'rgba(255,100,50,0.8)';
-        ctx.shadowBlur = 10;
-        ctx.fillRect(nx, ny, numW, numH);
-        ctx.shadowBlur = 0;
-        ctx.strokeStyle = 'rgba(255,140,80,0.7)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(nx, ny, numW, numH);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = `bold ${numW * 0.45}px "Courier New", monospace`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(num, nx + numW / 2, ny + numH / 2);
-      });
-
-      ctx.fillStyle = 'rgba(255,140,80,0.7)';
-      ctx.font = '12px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('按数字键回答!', canvas.width / 2, numStartY - 6);
-    }
-
-    // Hint text
-    const hintY = startY - 8;
-    if (activeUFO) {
-      ctx.fillStyle = 'rgba(200,120,255,0.6)';
-      ctx.font = '12px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`拼写单词: 按下闪烁的紫色字母键!`, canvas.width / 2, hintY);
-    } else if (activeLetters.size > 0) {
-      ctx.fillStyle = 'rgba(0,255,136,0.5)';
-      ctx.font = '12px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      const lettersArr = Array.from(activeLetters).join('  ');
-      ctx.fillText(`找到键盘上的「${lettersArr}」键，按下去！`, canvas.width / 2, hintY);
-    } else if (gameState === STATE.PLAYING && !activeMath) {
-      ctx.fillStyle = 'rgba(150,180,200,0.4)';
-      ctx.font = '13px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('等待敌机出现...', canvas.width / 2, hintY);
-    }
-  }
-
-  // ─── DRAW TARGET LETTER PROMPT (big hint for young kids) ──
-  function drawTargetPrompt() {
-    const lx = getLauncherX();
-    const ly = getLauncherY() - 60;
-
-    const activeJets = jets.filter(j => j.alive && !j.hit && !j.escaped);
-    const activeUFO = ufos.find(u => u.alive && !u.hit && !u.escaped);
-    const activeMath = mathJets.find(m => m.alive && !m.hit && !m.escaped);
-
-    // ── UFO word prompt ──
-    if (activeUFO) {
-      const word = activeUFO.word;
-      const typed = activeUFO.typedIndex;
-      const spacing = 42;
-      const totalW = (word.length - 1) * spacing;
-      let sx = lx - totalW / 2;
-
-      for (let i = 0; i < word.length; i++) {
-        const bx = sx + i * spacing;
-        const by = ly;
-        const isCurrent = (i === typed);
-        const isDone = i < typed;
-        const pulse = 0.5 + Math.sin(Date.now() / 400 + i) * 0.5;
-
-        if (isCurrent) {
-          // Current letter — big purple glow
-          const glowGrad = ctx.createRadialGradient(bx, by, 6, bx, by, 38);
-          glowGrad.addColorStop(0, `rgba(200,120,255,${pulse})`);
-          glowGrad.addColorStop(1, 'rgba(100,50,200,0)');
-          ctx.fillStyle = glowGrad;
-          ctx.beginPath();
-          ctx.arc(bx, by, 38, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        ctx.fillStyle = isDone ? 'rgba(0,40,15,0.7)' :
-          isCurrent ? `rgba(40,10,60,${0.5 + pulse * 0.3})` : 'rgba(20,15,30,0.4)';
-        ctx.strokeStyle = isCurrent ? `rgba(200,120,255,${0.7 + pulse * 0.3})` :
-          isDone ? 'rgba(0,255,68,0.5)' : 'rgba(100,80,130,0.3)';
-        ctx.lineWidth = isCurrent ? 3 : 1.5;
-        ctx.beginPath();
-        ctx.roundRect(bx - 26, by - 26, 52, 52, 10);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.fillStyle = isCurrent ? '#ffdd44' : isDone ? '#00ff44' : 'rgba(150,120,180,0.5)';
-        ctx.shadowColor = isCurrent ? 'rgba(255,220,68,0.9)' :
-          isDone ? 'rgba(0,255,68,0.5)' : 'transparent';
-        ctx.shadowBlur = isCurrent ? 12 : isDone ? 6 : 0;
-        ctx.font = 'bold 36px "Courier New", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(word[i], bx, by);
-        ctx.shadowBlur = 0;
-      }
-
-      ctx.fillStyle = 'rgba(220,180,255,0.7)';
-      ctx.font = 'bold 14px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('依次按下字母拼单词!', lx, ly - 38);
-      return;
-    }
-
-    // ── Math jet prompt ──
-    if (activeMath) {
-      const pulse = 0.5 + Math.sin(Date.now() / 500) * 0.5;
-      const glowGrad = ctx.createRadialGradient(lx, ly, 8, lx, ly, 55);
-      glowGrad.addColorStop(0, `rgba(255,120,50,${pulse * 0.7})`);
-      glowGrad.addColorStop(1, 'rgba(200,50,0,0)');
-      ctx.fillStyle = glowGrad;
-      ctx.beginPath();
-      ctx.arc(lx, ly, 55, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = `rgba(50,10,0,${0.5 + pulse * 0.3})`;
-      ctx.strokeStyle = `rgba(255,100,50,${0.7 + pulse * 0.3})`;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(lx - 70, ly - 30, 140, 60, 12);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#ffcc88';
-      ctx.font = 'bold 30px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(activeMath.question, lx, ly - 2);
-
-      if (activeMath.playerAnswer) {
-        ctx.fillStyle = '#ffff44';
-        ctx.shadowColor = 'rgba(255,255,68,0.9)';
-        ctx.shadowBlur = 10;
-        ctx.font = 'bold 36px "Courier New", monospace';
-        ctx.fillText(activeMath.playerAnswer, lx + 60, ly - 2);
-        ctx.shadowBlur = 0;
-      }
-
-      ctx.fillStyle = 'rgba(255,200,150,0.7)';
-      ctx.font = 'bold 14px sans-serif';
-      ctx.fillText('按数字键回答!', lx, ly - 42);
-      return;
-    }
-
-    // ── Regular letter prompt ──
-    if (activeJets.length === 0) return;
-
-    const spacing = 90;
-    const totalW = (activeJets.length - 1) * spacing;
-    let startX = lx - totalW / 2;
-
-    activeJets.forEach((jet, i) => {
-      const bx = startX + i * spacing;
-      const by = ly;
-
-      const pulse = 0.5 + Math.sin(Date.now() / 500 + i) * 0.5;
-      const glowGrad = ctx.createRadialGradient(bx, by, 8, bx, by, 40);
-      glowGrad.addColorStop(0, `rgba(0,255,136,${pulse * 0.7})`);
-      glowGrad.addColorStop(0.5, `rgba(0,200,100,${pulse * 0.3})`);
-      glowGrad.addColorStop(1, 'rgba(0,100,50,0)');
-      ctx.fillStyle = glowGrad;
-      ctx.beginPath();
-      ctx.arc(bx, by, 40, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = `rgba(0,30,15,${0.6 + pulse * 0.3})`;
-      ctx.strokeStyle = `rgba(0,255,136,${0.7 + pulse * 0.3})`;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(bx - 32, by - 32, 64, 64, 12);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#00ff88';
-      ctx.shadowColor = 'rgba(0,255,136,0.9)';
-      ctx.shadowBlur = 15;
-      ctx.font = 'bold 44px "Courier New", monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(jet.letter, bx, by);
-      ctx.shadowBlur = 0;
-
-      ctx.fillStyle = 'rgba(200,255,220,0.8)';
-      ctx.font = 'bold 14px sans-serif';
-      ctx.fillText('按这个键!', bx, by - 42);
-    });
-
-    const arrowY = ly - 5;
-    ctx.strokeStyle = 'rgba(0,255,136,0.4)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(lx, ly + 10);
-    ctx.lineTo(lx, arrowY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  // ─── DRAW HUD ──────────────────────────────────────
-  function drawHUD() {
-    // Score
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 22px "Courier New", monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`得分: ${score}`, 25, 35);
-
-    // Combo
-    if (combo > 1) {
-      ctx.fillStyle = '#ffdd00';
-      ctx.font = 'bold 18px "Courier New", monospace';
-      ctx.fillText(`COMBO x${combo}`, 25, 60);
-    }
-
-    // Hearts
-    ctx.textAlign = 'right';
-    let heartsStr = '';
-    for (let i = 0; i < MAX_HP; i++) {
-      heartsStr += i < hp ? '❤️' : '🖤';
-    }
-    ctx.font = '28px sans-serif';
-    ctx.fillText(heartsStr, canvas.width - 25, 38);
-
-    // Max combo record
-    if (maxCombo > 1) {
-      ctx.fillStyle = 'rgba(255,200,100,0.7)';
-      ctx.font = '14px "Courier New", monospace';
-      ctx.fillText(`最高连击: ${maxCombo}`, canvas.width - 25, 65);
-    }
-  }
-
-  // ─── DRAW START SCREEN ─────────────────────────────
-  function drawMenuScreen() {
-    // Dim overlay
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Title
-    ctx.fillStyle = '#00ff88';
-    ctx.shadowColor = 'rgba(0,255,136,0.8)';
-    ctx.shadowBlur = 20;
-    ctx.font = 'bold 48px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('字 母 导 弹', canvas.width / 2, canvas.height * 0.3);
-    ctx.shadowBlur = 0;
-
-    // Subtitle
-    ctx.fillStyle = '#aaccee';
-    ctx.font = '18px "Courier New", monospace';
-    ctx.fillText('LETTER MISSILE', canvas.width / 2, canvas.height * 0.3 + 40);
-
-    // Instructions
-    const instructions = [
-      '🎯 天空中出现带有字母的战斗机',
-      '⌨️  按下键盘对应的字母键发射导弹',
-      '🛸 连击10次出现飞碟 — 拼3字母单词!',
-      '🔢 连击5次出现红色战机 — 做数学题!',
-      '💚 每20000分恢复1点生命值',
-    ];
-    ctx.fillStyle = 'rgba(200,220,240,0.85)';
-    ctx.font = '16px "Courier New", monospace';
-    instructions.forEach((line, i) => {
-      ctx.fillText(line, canvas.width / 2, canvas.height * 0.45 + i * 30);
-    });
-
-    // Start prompt
-    const pulse = 0.6 + Math.sin(Date.now() / 800) * 0.4;
-    ctx.fillStyle = `rgba(0,255,136,${pulse})`;
-    ctx.font = 'bold 28px "Courier New", monospace';
-    ctx.fillText('按 空格键 开始游戏', canvas.width / 2, canvas.height * 0.72);
-
-    // High score
-    if (maxCombo > 0) {
-      ctx.fillStyle = 'rgba(255,200,100,0.6)';
-      ctx.font = '14px "Courier New", monospace';
-      ctx.fillText(`历史最高连击: ${maxCombo}`, canvas.width / 2, canvas.height * 0.72 + 40);
-    }
-  }
-
-  // ─── DRAW REST SCREEN ──────────────────────────────
-  function drawRestScreen() {
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const remaining = Math.max(0, Math.ceil((restEndTime - Date.now()) / 1000));
-    const minutes = Math.floor(remaining / 60);
-    const seconds = remaining % 60;
-    const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-
-    ctx.fillStyle = '#ff8888';
-    ctx.shadowColor = 'rgba(255,100,100,0.6)';
-    ctx.shadowBlur = 15;
-    ctx.font = 'bold 36px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('休 息 一 下', canvas.width / 2, canvas.height * 0.35);
-    ctx.shadowBlur = 0;
-
-    ctx.fillStyle = '#ccccee';
-    ctx.font = '18px "Courier New", monospace';
-    ctx.fillText('保护眼睛，休息5分钟后再玩哦~', canvas.width / 2, canvas.height * 0.42);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 56px "Courier New", monospace';
-    ctx.fillText(timeStr, canvas.width / 2, canvas.height * 0.54);
-
-    if (remaining <= 0) {
-      ctx.fillStyle = '#00ff88';
-      ctx.font = 'bold 24px "Courier New", monospace';
-      ctx.fillText('按 空格键 重新开始', canvas.width / 2, canvas.height * 0.65);
-    }
-
-    ctx.fillStyle = 'rgba(200,200,220,0.5)';
-    ctx.font = '14px "Courier New", monospace';
-    ctx.fillText(`本次得分: ${score}  |  最高连击: ${maxCombo}`, canvas.width / 2, canvas.height * 0.74);
-  }
-
-  // ─── UPDATE KEY PRESS EFFECTS ──────────────────────
-  function updateKeyEffects(dt) {
-    for (const key in keyPressEffect) {
-      keyPressEffect[key] -= dt * 2;
-      if (keyPressEffect[key] <= 0) delete keyPressEffect[key];
-    }
-  }
-
-  // ─── GAME LOOP ─────────────────────────────────────
-  let lastTime = performance.now();
-
-  function gameLoop(timestamp) {
-    requestAnimationFrame(gameLoop);
-
-    let dt = (timestamp - lastTime) / 1000;
-    if (dt > 0.1) dt = 0.1; // Cap to prevent jumps
-    lastTime = timestamp;
-
-    update(dt);
-    render();
-  }
-
-  function update(dt) {
-    // Update stars
-    for (const star of stars) star.update(dt);
-    for (const cloud of clouds) cloud.update(dt);
-
-    // Update key effects
-    updateKeyEffects(dt);
-
-    // Screen flash decay
-    if (screenFlash > 0) screenFlash -= dt * 1.5;
-
-    if (gameState === STATE.PLAYING) {
-      // Count all active entities
-      const activeCount =
-        jets.filter(j => j.alive && !j.escaped).length +
-        ufos.filter(u => u.alive && !u.escaped).length +
-        mathJets.filter(m => m.alive && !m.escaped).length;
-
-      if (activeCount === 0) {
-        spawnTimer -= dt;
-        if (spawnTimer <= 0) {
-          spawnWave();
-          spawnTimer = 2 + Math.random() * 1.5;
-        }
-      }
-
-      // Update all entities
-      for (const jet of jets) jet.update(dt);
-      for (const ufo of ufos) ufo.update(dt);
-      for (const mj of mathJets) mj.update(dt);
-      for (const missile of missiles) missile.update(dt);
-
-      // Check escaped jets
-      for (const jet of jets) { if (jet.escaped && jet.alive) onJetEscaped(jet); }
-      for (const ufo of ufos) { if (ufo.escaped && ufo.alive) onEntityEscaped(ufo); }
-      for (const mj of mathJets) { if (mj.escaped && mj.alive) onEntityEscaped(mj); }
-
-      // Check missile hits
-      for (const missile of missiles) {
-        if (!missile.alive && missile.target && missile.target.hit) {
-          let isSpecial = (missile.target instanceof UFO || missile.target instanceof MathJet);
-          handleEntityDestroyed(missile.target);
-        }
-      }
-
-      // Update explosions / floating texts
-      for (const exp of explosions) exp.update(dt);
-      for (const ft of floatingTexts) ft.update(dt);
-
-      // Cleanup
-      jets = jets.filter(j => j.alive);
-      ufos = ufos.filter(u => u.alive);
-      mathJets = mathJets.filter(m => m.alive);
-      missiles = missiles.filter(m => m.alive);
-      explosions = explosions.filter(e => e.alive);
-      floatingTexts = floatingTexts.filter(f => f.alive);
-    }
-
-    // Update explosions even when not playing (for visual polish)
-    for (const exp of explosions) exp.update(dt);
-    explosions = explosions.filter(e => e.alive);
-    for (const ft of floatingTexts) ft.update(dt);
-    floatingTexts = floatingTexts.filter(f => f.alive);
-
-    // Check rest timer completion
-    if ((gameState === STATE.REST || gameState === STATE.OVER) && Date.now() >= restEndTime) {
-      if (gameState === STATE.REST) {
-        localStorage.removeItem(REST_KEY);
-      }
-    }
-  }
-
-  function render() {
-    // Clear
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Background gradient
-    const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    bgGrad.addColorStop(0, '#0a0a1a');
-    bgGrad.addColorStop(0.5, '#0d1130');
-    bgGrad.addColorStop(1, '#0a0f25');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Stars
-    for (const star of stars) star.draw(ctx);
-
-    // Clouds
-    for (const cloud of clouds) cloud.draw(ctx);
-
-    // Jets
-    for (const jet of jets) jet.draw(ctx);
-    for (const ufo of ufos) ufo.draw(ctx);
-    for (const mj of mathJets) mj.draw(ctx);
-
-    // Missiles
-    for (const missile of missiles) missile.draw(ctx);
-
-    // Explosions
-    for (const exp of explosions) exp.draw(ctx);
-
-    // Floating texts
-    for (const ft of floatingTexts) ft.draw(ctx);
-
-    // Ground
-    drawGround();
-
-    // Keyboard hints
-    if (gameState === STATE.PLAYING) {
-      drawTargetPrompt();
-      drawKeyboardHints();
-    }
-
-    // HUD
-    if (gameState === STATE.PLAYING) {
-      drawHUD();
-    }
-
-    // Screen flash (damage)
-    if (screenFlash > 0) {
-      ctx.fillStyle = `rgba(255,50,30,${screenFlash * 0.3})`;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-
-    // Menu overlay
-    if (gameState === STATE.MENU) {
-      drawMenuScreen();
-    }
-
-    // Rest overlay
-    if (gameState === STATE.REST || gameState === STATE.OVER) {
-      drawRestScreen();
-    }
-  }
-
-  // ─── START ─────────────────────────────────────────
-  resize();
+  ctx.fillStyle='rgba(200,200,220,0.5)';ctx.font='14px "Courier New",monospace';ctx.textAlign='center';
+  ctx.fillText(`本次得分: ${score}  |  最高连击: ${maxCombo}`,W/2,H*0.74);
+}
+
+// ─── GAME LOOP ──────────────────────────────────────
+let lastTime=performance.now();
+function gameLoop(ts){
   requestAnimationFrame(gameLoop);
+  let dt=(ts-lastTime)/1000; if(dt>0.1)dt=0.1; lastTime=ts;
+  update(dt); render();
+}
 
-  // Handle page visibility to clean up rest timer
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
-    if (gameState === STATE.REST && Date.now() >= restEndTime) {
-      localStorage.removeItem(REST_KEY);
-      if (gameState === STATE.REST) gameState = STATE.MENU;
-    }
-  });
+function update(dt){
+  for(const s of stars)s.update(dt);
+  for(const c of clouds)c.update(dt);
+  if(screenFlash>0)screenFlash-=dt*1.5;
 
-  console.log('🚀 字母导弹游戏已就绪！');
-  console.log('按空格键开始游戏');
-  console.log('看到战斗机上的字母，按下键盘对应按键发射导弹！');
+  // Auto-start from intro after 2.5 seconds
+  if(gameState===STATE.INTRO && Date.now()-introStart>2500){ startGame(); }
+
+  if(gameState===STATE.PLAYING){
+    const ac=jets.filter(j=>j.alive&&!j.escaped).length+ufos.filter(u=>u.alive&&!u.escaped).length+mathJets.filter(m=>m.alive&&!m.escaped).length;
+    if(ac===0){spawnTimer-=dt;if(spawnTimer<=0){spawnWave();spawnTimer=2+Math.random()*1.5;}}
+    for(const j of jets)j.update(dt);
+    for(const u of ufos)u.update(dt);
+    for(const m of mathJets)m.update(dt);
+    for(const m of missiles)m.update(dt);
+    for(const j of jets){if(j.escaped&&j.alive)onEntityEscaped(j);}
+    for(const u of ufos){if(u.escaped&&u.alive)onEntityEscaped(u);}
+    for(const m of mathJets){if(m.escaped&&m.alive)onEntityEscaped(m);}
+    for(const m of missiles){if(!m.alive&&m.target&&m.target.hit)handleEntityDestroyed(m.target);}
+    for(const e of explosions)e.update(dt);
+    for(const f of floatingTexts)f.update(dt);
+    jets=jets.filter(j=>j.alive);ufos=ufos.filter(u=>u.alive);mathJets=mathJets.filter(m=>m.alive);
+    missiles=missiles.filter(m=>m.alive);explosions=explosions.filter(e=>e.alive);floatingTexts=floatingTexts.filter(f=>f.alive);
+  }
+  for(const e of explosions)e.update(dt);
+  explosions=explosions.filter(e=>e.alive);
+  for(const f of floatingTexts)f.update(dt);
+  floatingTexts=floatingTexts.filter(f=>f.alive);
+  if((gameState===STATE.REST||gameState===STATE.OVER)&&Date.now()>=restEndTime){if(gameState===STATE.REST)localStorage.removeItem(REST_KEY);}
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  const bgGrad=ctx.createLinearGradient(0,0,0,H);bgGrad.addColorStop(0,'#0a0a1a');bgGrad.addColorStop(0.5,'#0d1130');bgGrad.addColorStop(1,'#0a0f25');ctx.fillStyle=bgGrad;ctx.fillRect(0,0,W,H);
+  for(const s of stars)s.draw(ctx);
+  for(const c of clouds)c.draw(ctx);
+  for(const j of jets)j.draw(ctx);
+  for(const u of ufos)u.draw(ctx);
+  for(const m of mathJets)m.draw(ctx);
+  for(const m of missiles)m.draw(ctx);
+  for(const e of explosions)e.draw(ctx);
+  for(const f of floatingTexts)f.draw(ctx);
+  drawGround();
+  if(gameState===STATE.PLAYING){drawTargetPrompt();drawTouchButtons();drawHUD();}
+  if(screenFlash>0){ctx.fillStyle=`rgba(255,50,30,${screenFlash*0.3})`;ctx.fillRect(0,0,W,H);}
+  if(gameState===STATE.INTRO)drawIntroScreen();
+  if(gameState===STATE.REST||gameState===STATE.OVER)drawRestScreen();
+}
+
+// ─── INIT ───────────────────────────────────────────
+resize();
+requestAnimationFrame(gameLoop);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)return;if(gameState===STATE.REST&&Date.now()>=restEndTime){localStorage.removeItem(REST_KEY);gameState=STATE.INTRO;}});
+
+console.log('🚀 字母导弹游戏已就绪！自动开始，支持触屏和键盘！');
 })();
 </script>
 </body>

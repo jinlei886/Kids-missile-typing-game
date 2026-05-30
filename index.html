@@ -447,42 +447,8 @@ function drawTouchButtons(){
     return;
   }
 
-  // ── Math number pad ──
-  if(activeMath){
-    const numKeys=['1','2','3','4','5','6','7','8','9','⌫','0'];
-    const cols=4, rows=3;
-    const btnW=Math.min(72,(W-40)/cols-6);
-    const btnH=Math.min(60,btnW*0.85);
-    const totalW=cols*(btnW+6)-6;
-    const totalH=rows*(btnH+6)-6;
-    let sx=(W-totalW)/2;
-    const sy=areaTop+Math.max(5,(areaH-totalH)/2)-8;
-
-    ctx.fillStyle='rgba(255,140,80,0.4)'; ctx.font='13px sans-serif'; ctx.textAlign='center';
-    ctx.fillText('点击数字回答!',lx,sy-12);
-
-    for(let i=0;i<numKeys.length;i++){
-      const col=i%cols, row=Math.floor(i/cols);
-      const bx=sx+col*(btnW+6), by=sy+row*(btnH+6);
-      const pulse=0.5+Math.sin(Date.now()/300+col+row)*0.4;
-
-      ctx.fillStyle=`rgba(255,80,30,${0.2+pulse*0.3})`;ctx.shadowColor='rgba(255,100,50,0.6)';ctx.shadowBlur=8;
-      ctx.beginPath();ctx.roundRect(bx,by,btnW,btnH,10);ctx.fill();
-      ctx.shadowBlur=0;
-      ctx.strokeStyle='rgba(255,140,80,0.6)';ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(bx,by,btnW,btnH,10);ctx.stroke();
-
-      ctx.fillStyle='#ffffff';ctx.font=`bold ${btnW*0.45}px "Courier New",monospace`;ctx.textAlign='center';ctx.textBaseline='middle';
-      const label=numKeys[i]==='⌫'?'⌫':numKeys[i];
-      ctx.fillText(label,bx+btnW/2,by+btnH/2);
-
-      if(numKeys[i]==='⌫') touchButtons.push({x:bx,y:by,w:btnW,h:btnH,key:'Backspace'});
-      else touchButtons.push({x:bx,y:by,w:btnW,h:btnH,key:numKeys[i]});
-    }
-    // Also handle backspace via touch button
-    const origInput=handleInput;
-    // Add backspace handling
-    return;
-  }
+  // ── Math: no bottom buttons — use top prompt only ──
+  if(activeMath) return;
 
   // ── Regular letter buttons ──
   const letters=activeJets.map(j=>j.letter);

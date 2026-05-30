@@ -24,29 +24,23 @@
 const canvas=document.getElementById('game');
 const ctx=canvas.getContext('2d');
 
-// ─── HIDDEN INPUT for mobile keyboard ───────────────
-const kbInput=document.getElementById('kb');
-function kbFocus(){
-  if(document.activeElement!==kbInput){ kbInput.focus(); kbInput.value=''; }
-}
-function kbBlur(){ kbInput.blur(); }
-// Capture each character typed on mobile keyboard
-kbInput.addEventListener('input',()=>{
-  if(gameState!==STATE.PLAYING){ kbInput.value=''; return; }
-  const val=kbInput.value;
-  if(!val){ return; }
-  // Process each new character
-  for(let i=0;i<val.length;i++){
-    let ch=val[i];
-    if(ch===' '){ continue; }
-    // Normalize: uppercase letters, pass digits
-    if((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')){
-      initAudio();
-      handleInput(ch);
+const isTouchDevice='ontouchstart' in window || navigator.maxTouchPoints > 0;
+const kbInput=isTouchDevice ? document.getElementById('kb') : null;
+if(kbInput){
+  kbInput.addEventListener('input',()=>{
+    if(gameState!==STATE.PLAYING){ kbInput.value=''; return; }
+    const val=kbInput.value;
+    if(!val){ return; }
+    for(let i=0;i<val.length;i++){
+      const ch=val[i];
+      if(ch===' ') continue;
+      if((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')){ initAudio(); handleInput(ch); }
     }
-  }
-  kbInput.value='';
-});
+    kbInput.value='';
+  });
+}
+function kbFocus(){ if(kbInput&&document.activeElement!==kbInput){ kbInput.focus(); kbInput.value=''; } }
+function kbBlur(){ if(kbInput) kbInput.blur(); }
 
 // ─── AUDIO ──────────────────────────────────────────
 let audioCtx=null;

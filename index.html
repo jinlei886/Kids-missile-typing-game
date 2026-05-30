@@ -18,10 +18,35 @@
 </head>
 <body>
 <canvas id="game"></canvas>
+<input id="kb" type="text" inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position:fixed;top:-100px;left:0;width:1px;height:1px;opacity:0;font-size:16px;z-index:999;">
 <script>
 (function(){
 const canvas=document.getElementById('game');
 const ctx=canvas.getContext('2d');
+
+// ─── HIDDEN INPUT for mobile keyboard ───────────────
+const kbInput=document.getElementById('kb');
+function kbFocus(){
+  if(document.activeElement!==kbInput){ kbInput.focus(); kbInput.value=''; }
+}
+function kbBlur(){ kbInput.blur(); }
+// Capture each character typed on mobile keyboard
+kbInput.addEventListener('input',()=>{
+  if(gameState!==STATE.PLAYING){ kbInput.value=''; return; }
+  const val=kbInput.value;
+  if(!val){ return; }
+  // Process each new character
+  for(let i=0;i<val.length;i++){
+    let ch=val[i];
+    if(ch===' '){ continue; }
+    // Normalize: uppercase letters, pass digits
+    if((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')){
+      initAudio();
+      handleInput(ch);
+    }
+  }
+  kbInput.value='';
+});
 
 // ─── AUDIO ──────────────────────────────────────────
 let audioCtx=null;
@@ -331,7 +356,7 @@ function getCanvasPos(e){
   return {x:(e.clientX||(e.touches&&e.touches[0].clientX)||0)-rect.left,y:(e.clientY||(e.touches&&e.touches[0].clientY)||0)-rect.top};
 }
 function processTap(pos){
-  initAudio();
+  initAudio(); kbFocus(); // pop mobile keyboard on user tap
   // Check touch buttons
   for(const btn of touchButtons){
     if(pos.x>=btn.x&&pos.x<=btn.x+btn.w&&pos.y>=btn.y&&pos.y<=btn.y+btn.h){
@@ -366,12 +391,12 @@ window.addEventListener('keydown',(e)=>{
 
 // ─── START / END ────────────────────────────────────
 function startGame(){
-  initAudio(); gameState=STATE.PLAYING; score=0; combo=0; maxCombo=0; hp=MAX_HP;
+  initAudio(); kbFocus(); gameState=STATE.PLAYING; score=0; combo=0; maxCombo=0; hp=MAX_HP;
   jets=[];ufos=[];mathJets=[];missiles=[];explosions=[];floatingTexts=[];
   spawnTimer=1.5; screenFlash=0; pendingSpecialSpawn=null; hpRecoveryMilestone=20000;
 }
 function triggerGameOver(){
-  gameState=STATE.OVER; sfxGameOver();
+  gameState=STATE.OVER; sfxGameOver(); kbBlur();
   restEndTime=Date.now()+5*60*1000; localStorage.setItem(REST_KEY,restEndTime.toString());
 }
 function onLoseLife(x,y){hp--;combo=0;pendingSpecialSpawn=null;screenFlash=0.5;sfxMiss();floatingTexts.push(new FloatingText(x,y,'-1 ❤️','#ff3333'));if(hp<=0)triggerGameOver();}

@@ -115,12 +115,24 @@ const clouds=Array.from({length:6},()=>new Cloud());
 
 // ─── WORDS / MATH ───────────────────────────────────
 const WORDS=['CAT','DOG','CAR','BUS','SUN','HAT','BED','CUP','BOX','PEN','RED','BIG','RUN','SIT','TOP','FUN','HOT','MAP','JAM','LEG','PIG','COW','FAN','MUD','ZIP','FOX','BAT','HUG','YUM','WET'];
+
 function randomMathProblem(){
-  const type=Math.random();
-  let a,b,ans;
-  if(type<0.3){ a=Math.floor(Math.random()*50)+10; b=Math.floor(Math.random()*(60-a>0?60-a:10))+1; ans=a+b; return {question:`${a} + ${b} = ?`, answer:ans.toString()}; }
-  else if(type<0.6){ a=Math.floor(Math.random()*40)+15; b=Math.floor(Math.random()*14)+1; ans=a-b; return {question:`${a} - ${b} = ?`, answer:ans.toString()}; }
-  else { a=Math.floor(Math.random()*7)+3; b=Math.floor(Math.random()*7)+3; ans=a*b; return {question:`${a} × ${b} = ?`, answer:ans.toString()}; }
+  // 5-6 year old level: addition/subtraction within 10
+  const isAdd = Math.random() < 0.6;
+  let a, b, ans;
+  if (isAdd) {
+    // Addition: a + b ≤ 10, both ≥ 1
+    a = Math.floor(Math.random() * 8) + 1;  // 1-8
+    b = Math.floor(Math.random() * (10 - a)) + 1;  // 1 to (10-a)
+    ans = a + b;
+    return { question: `${a} + ${b} = ?`, answer: ans.toString() };
+  } else {
+    // Subtraction: a - b ≥ 0, a ≤ 10
+    a = Math.floor(Math.random() * 9) + 2;  // 2-10
+    b = Math.floor(Math.random() * a) + 1;   // 1 to a
+    ans = a - b;
+    return { question: `${a} - ${b} = ?`, answer: ans.toString() };
+  }
 }
 
 // ─── JET ────────────────────────────────────────────
@@ -432,39 +444,8 @@ function drawTouchButtons(){
   const areaTop=H*0.75;
   const areaH=H-areaTop-10;
 
-  // ── UFO word buttons ──
-  if(activeUFO){
-    const w=activeUFO.word, ti=activeUFO.typedIndex, n=w.length;
-    const btnSize=Math.min(64,(W-40)/n-8);
-    const totalW=n*(btnSize+8)-8;
-    let sx=(W-totalW)/2;
-    const by=areaTop+Math.max(10,(areaH-btnSize)/2);
-
-    ctx.fillStyle='rgba(200,120,255,0.4)'; ctx.font='13px sans-serif'; ctx.textAlign='center';
-    ctx.fillText('依次点击字母拼单词!',lx,by-14);
-
-    for(let i=0;i<n;i++){
-      const bx=sx+i*(btnSize+8);
-      const isCur=(i===ti), isDone=i<ti;
-      const pulse=0.5+Math.sin(Date.now()/400+i)*0.5;
-
-      ctx.fillStyle=isDone?'rgba(0,180,40,0.7)':isCur?`rgba(180,80,255,${0.5+pulse*0.4})`:'rgba(30,20,50,0.4)';
-      ctx.shadowColor=isCur?`rgba(200,120,255,${0.7+pulse*0.3})`:isDone?'rgba(0,255,68,0.5)':'transparent';
-      ctx.shadowBlur=isCur?14:isDone?6:0;
-      ctx.beginPath();ctx.roundRect(bx,by,btnSize,btnSize,14);ctx.fill();
-
-      ctx.strokeStyle=isCur?'rgba(200,140,255,0.9)':isDone?'rgba(0,255,68,0.6)':'rgba(100,80,130,0.35)';
-      ctx.lineWidth=isCur?3:2;ctx.beginPath();ctx.roundRect(bx,by,btnSize,btnSize,14);ctx.stroke();
-      ctx.shadowBlur=0;
-
-      ctx.fillStyle=isCur?'#ffdd44':isDone?'#00ff44':'rgba(150,120,180,0.5)';
-      ctx.font=`bold ${btnSize*0.5}px "Courier New",monospace`; ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText(w[i],bx+btnSize/2,by+btnSize/2);
-
-      if(isCur) touchButtons.push({x:bx,y:by,w:btnSize,h:btnSize,key:w[i]});
-    }
-    return;
-  }
+  // ── UFO: no bottom buttons — use aircraft + top prompt only ──
+  if(activeUFO) return;
 
   // ── Math: no bottom buttons — use top prompt only ──
   if(activeMath) return;
